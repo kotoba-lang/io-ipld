@@ -3,7 +3,7 @@
  ;; dag-cbor supplies canonical CBOR + generic tags (>= 9c60d58, the first
  ;; SHA with major-type-6 support); this repo owns the tag-42 link discipline.
  :deps {io.github.kotoba-lang/io-multiformats {:git/sha "eec3ee85c458ea830be94518b9a42f4a8f1aee40"}
-        io.github.kotoba-lang/dag-cbor {:git/sha "9c60d5832b771f869b237f5ba20f0b6de57cde84"}}
+        io.github.kotoba-lang/org-ietf-cbor {:git/sha "9c60d5832b771f869b237f5ba20f0b6de57cde84"}}
  :aliases
  {:test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner
