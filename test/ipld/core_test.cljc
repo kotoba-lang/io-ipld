@@ -62,6 +62,14 @@
                (ipld/encode {1 "non-string-key"}))))
 
 ;; ── storage ports + generic walk ─────────────────────────────────────────────
+(deftest node->block-encodes-and-addresses-a-node
+  ;; put-node! is well-tested but only exercises node->block indirectly --
+  ;; this covers node->block's own {:cid :bytes} contract directly.
+  (let [node {"a" 1 "b" (ipld/link some-cid)}
+        {:keys [cid bytes]} (ipld/node->block node)]
+    (is (= (hx (ipld/encode node)) (hx bytes)) ":bytes is exactly ipld/encode's output")
+    (is (= (ipld/cid bytes) cid) ":cid is exactly (ipld/cid :bytes), content-addressed")))
+
 (deftest put-get-links-walk
   (let [store (atom {})
         put!  (fn [cid bytes] (swap! store assoc cid bytes))
