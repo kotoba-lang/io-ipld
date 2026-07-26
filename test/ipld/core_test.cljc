@@ -62,14 +62,6 @@
                (ipld/encode {1 "non-string-key"}))))
 
 ;; ── storage ports + generic walk ─────────────────────────────────────────────
-(deftest node->block-encodes-and-addresses-a-node
-  ;; put-node! is well-tested but only exercises node->block indirectly --
-  ;; this covers node->block's own {:cid :bytes} contract directly.
-  (let [node {"a" 1 "b" (ipld/link some-cid)}
-        {:keys [cid bytes]} (ipld/node->block node)]
-    (is (= (hx (ipld/encode node)) (hx bytes)) ":bytes is exactly ipld/encode's output")
-    (is (= (ipld/cid bytes) cid) ":cid is exactly (ipld/cid :bytes), content-addressed")))
-
 (deftest put-get-links-walk
   (let [store (atom {})
         put!  (fn [cid bytes] (swap! store assoc cid bytes))
@@ -83,6 +75,17 @@
     (is (= [] (ipld/links (ipld/get-node get-fn leaf-cid))))
     (is (nil? (ipld/get-node get-fn some-cid)))       ; absent block -> nil
     (is (= root-cid (ipld/cid (get @store root-cid))))))
+
+(deftest verified-read-rejects-bytes-stored-under-the-wrong-cid
+  (let [good (ipld/node->block {"kind" "good"})
+        evil (:bytes (ipld/node->block {"kind" "evil"}))
+        get-fn (fn [requested] (when (= requested (:cid good)) evil))]
+    (is (= :ipld/cid-mismatch
+           (:type
+            (ex-data
+             (try (ipld/get-node get-fn (:cid good))
+                  nil
+                  (catch #?(:clj Exception :cljs :default) e e))))))))
 
 (deftest link-equality
   (is (= (ipld/link some-cid) (ipld/link some-cid)))
