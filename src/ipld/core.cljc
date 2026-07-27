@@ -19,9 +19,9 @@
 
   In application data a link is the explicit `Link` wrapper: construct
   with `(link cid-string)`, read with `link-cid`, test with `link?`.
-  Access NEVER goes through direct record/deftype field access at call
-  sites (`.-cid`) — nbb and other lighter cljs runtimes don't implement
-  it, which is exactly how earlier portability bugs stayed invisible.
+  Access NEVER goes through deftype fields at call sites (`.-cid`) — nbb
+  and other lighter cljs runtimes don't implement direct field access,
+  which is exactly how earlier portability bugs stayed invisible.
 
   Storage stays injected exactly like prolly-tree/commit-dag:
   `(put-node! put! node)` encodes, CIDs, stores, returns the CID string.
@@ -33,25 +33,19 @@
             [cbor.core :as cbor]))
 
 ;; ── Link ──────────────────────────────────────────────────────────────────────
-;; `defrecord`, not `deftype`: a hand-written `#?@(:clj [Object (equals ...)
-;; (hashCode ...)] :cljs [IEquiv (-equiv ...) IHash (-hash ...)])` block (what
-;; this used to be) doesn't dispatch on nbb -- SCI's `deftype` support cannot
-;; resolve a custom implementation of a BUILT-IN cljs.core protocol
-;; (`IEquiv`/`IHash`) on a deftype, `extend-type` included (confirmed
-;; empirically, in complete isolation from this file: `Protocol not found:
-;; IEquiv` either way -- same root cause `kotoba-lang/org-ietf-cbor`'s
-;; `Tagged`/`OrderedMap` hit and fixed the same way). `defrecord` sidesteps
-;; this: structural equality/hash are part of what the compiler generates for
-;; a record on every platform (JVM/self-hosted cljs/nbb), not a protocol
-;; extension nbb has to resolve at all. The custom `Object`/`toString`
-;; override below is UNAFFECTED by this switch (confirmed empirically that
-;; nbb dispatches a record's own `Object` method override fine -- the SCI gap
-;; is specifically about built-in cljs.core protocols, not `Object`), so it
-;; stays as one shared (non-`#?()`) impl instead of the old duplicated
-;; :clj/:cljs pair.
-(defrecord Link [cid]
-  Object
-  (toString [_] (str "#ipld/link \"" cid "\"")))
+(deftype Link [cid]
+  #?@(:clj  [Object
+             (equals [_ other]
+               (and (instance? Link other) (= cid (.-cid ^Link other))))
+             (hashCode [_] (hash cid))
+             (toString [_] (str "#ipld/link \"" cid "\""))]
+      :cljs [IEquiv
+             (-equiv [_ other]
+               (and (instance? Link other) (= cid (.-cid ^Link other))))
+             IHash
+             (-hash [_] (hash cid))
+             Object
+             (toString [_] (str "#ipld/link \"" cid "\""))]))
 
 (defn link
   "Wrap a base32 'b'-multibase CIDv1 string as an IPLD link."
@@ -65,8 +59,8 @@
 
 (defn link-cid
   "The CID string inside a Link."
-  [l]
-  (:cid l))
+  [^Link l]
+  (.-cid l))
 
 ;; ── tag-42 byte form: 0x00 identity-multibase prefix ++ binary CID ───────────
 (defn- link->tag-bytes [cid-str]
@@ -137,12 +131,44 @@
     (put! cid bytes)
     cid))
 
+(defn get-verified-block
+  "Fetch bytes at `expected-cid` and recompute their CID before returning them.
+  Missing blocks return nil; a storage adapter returning different bytes under
+  a CID fails closed. This is the only conforming read across a storage trust
+  boundary."
+  [get-fn expected-cid]
+  (when-let [bytes (get-fn expected-cid)]
+    (let [actual (cid bytes)]
+      (when-not (= expected-cid actual)
+        (throw (ex-info "ipld: block CID mismatch"
+                        {:type :ipld/cid-mismatch
+                         :expected-cid expected-cid
+                         :actual-cid actual})))
+      bytes)))
+
 (defn get-node
   "Fetch and decode the node at `cid-str` via `(get-fn cid) -> bytes`.
-  Returns nil when `get-fn` does (block not present)."
+  Returns nil when `get-fn` does (block not present). Bytes are rehashed before
+  decode; callers cannot accidentally treat a CID-keyed lookup as verification."
   [get-fn cid-str]
-  (when-let [bytes (get-fn cid-str)]
+  (when-let [bytes (get-verified-block get-fn cid-str)]
     (decode bytes)))
+
+#?(:cljs
+   (defn get-node-async
+     "Promise variant for async object stores; applies the identical CID
+     recomputation before decode."
+     [get-fn expected-cid]
+     (-> (get-fn expected-cid)
+         (.then (fn [bytes]
+                  (when bytes
+                    (let [actual (cid bytes)]
+                      (when-not (= expected-cid actual)
+                        (throw (ex-info "ipld: block CID mismatch"
+                                        {:type :ipld/cid-mismatch
+                                         :expected-cid expected-cid
+                                         :actual-cid actual})))
+                      (decode bytes))))))))
 
 (defn links
   "Every Link CID reachable inside `node` (deep, document order). This is
