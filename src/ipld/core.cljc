@@ -75,6 +75,28 @@
                       {:first-byte (first xs)})))
     (Link. (str "b" (mf/base32 (rest xs))))))
 
+;; The tag-42 wire value on its own, for codecs that compose a Link into a
+;; LARGER cbor form rather than encoding a whole node (`ipld.value`, which
+;; carries a Link as one value position inside its own envelope). Exposed so
+;; that discipline lives here once instead of being re-derived per codec —
+;; a second hand-rolled `0x00 ++ binary CID` is exactly the drift this repo
+;; exists to prevent. `encode`/`decode` are unaffected.
+(defn link->tag
+  "A Link as its bare DAG-CBOR wire value: `cbor/tagged` 42 wrapping
+  `0x00 ++ <binary CID>`."
+  [l]
+  (when-not (link? l)
+    (throw (ex-info "ipld: link->tag expects a Link" {:value l})))
+  (cbor/tagged 42 (link->tag-bytes (link-cid l))))
+
+(defn tag->link
+  "Inverse of `link->tag`. Throws on any other tag, matching `decode`."
+  [t]
+  (when-not (and (cbor/tagged? t) (= 42 (cbor/tag-number t)))
+    (throw (ex-info "ipld: tag->link expects cbor tag 42"
+                    {:tag (when (cbor/tagged? t) (cbor/tag-number t))})))
+  (tag-bytes->link (cbor/tag-value t)))
+
 ;; ── data <-> cbor-with-tags transforms ────────────────────────────────────────
 (defn- ->cbor-data [x]
   (cond
