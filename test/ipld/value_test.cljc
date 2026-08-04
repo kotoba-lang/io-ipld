@@ -28,6 +28,9 @@
   #?(:clj (byte-array (map unchecked-byte xs))
      :cljs (js/Uint8Array. (into-array xs))))
 
+(defn- exact-text [n]
+  #?(:clj (str n) :cljs (.toString n)))
+
 (defn- rejects? [f]
   (try (f) false
        (catch #?(:clj Exception :cljs :default) e
@@ -82,6 +85,34 @@
   (is (= "820348bff0000000000000" (hx (v/encode-value (v/float64 -1.0)))))
   (is (= 0.5 (v/float64-value (v/decode-value (v/encode-value (v/float64 0.5))))))
   (is (= -273.15 (v/float64-value (v/decode-value (v/encode-value (v/float64 -273.15)))))))
+
+(deftest exact-int64-round-trips-through-the-explicit-wrapper
+  ;; 8209 48 <8 bytes big-endian signed two's-complement>
+  (doseq [[decimal wire] [["0" "8209480000000000000000"]
+                          ["1" "8209480000000000000001"]
+                          ["-1" "820948ffffffffffffffff"]
+                          ["9007199254740992" "8209480020000000000000"]
+                          ["9223372036854775807" "8209487fffffffffffffff"]
+                          ["-9223372036854775808" "8209488000000000000000"]]]
+    (let [wrapped (v/int64 #?(:clj (biginteger decimal) :cljs (js/BigInt decimal)))
+          decoded (v/decode-value (v/encode-value wrapped))]
+      (is (= wire (hx (v/encode-value wrapped))))
+      (is (v/int64? decoded))
+      (is (= decimal (exact-text (v/int64-value decoded))))))
+  (testing "safe JS numbers are accepted but unsafe Numbers are not guessed"
+    (is (= "1" (exact-text (v/int64-value (v/int64 1)))))
+    #?(:cljs (is (= :value/int64-not-an-exact-integer
+                    (problem-of #(v/int64 9007199254740992)))))))
+
+(deftest int64-range-and-wire-shape-fail-closed
+  (is (= :value/int64-out-of-range
+         (problem-of #(v/int64 #?(:clj 9223372036854775808N
+                                  :cljs (js/BigInt "9223372036854775808"))))))
+  (is (= :value/int64-out-of-range
+         (problem-of #(v/int64 #?(:clj -9223372036854775809N
+                                  :cljs (js/BigInt "-9223372036854775809"))))))
+  (is (= :value/int64-payload
+         (problem-of #(v/decode-value (cbor/encode [9 (bs 0 1)]))))))
 
 ;; ── the reason the wrapper exists ────────────────────────────────────────────
 (deftest a-bare-non-integral-number-is-rejected-not-guessed

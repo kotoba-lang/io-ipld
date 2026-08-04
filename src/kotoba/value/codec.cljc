@@ -44,6 +44,9 @@
 (defn float64 [number] (value/float64 number))
 (defn float64? [x] (value/float64? x))
 (defn float64-value [x] (value/float64-value x))
+(defn int64 [number] (value/int64 number))
+(defn int64? [x] (value/int64? x))
+(defn int64-value [x] (value/int64-value x))
 
 (defn value->form
   "Return the canonical tagged form embedded by larger org-owned codecs."

@@ -30,6 +30,17 @@
            (codec/float64-value
             (codec/form->value (codec/value->form wrapped)))))))
 
+(deftest facade-keeps-exact-int64-semantics
+  (let [decimal "9223372036854775807"
+        wrapped (codec/int64 #?(:clj (biginteger decimal)
+                                :cljs (js/BigInt decimal)))
+        encoded (codec/encode-bounded wrapped 16)
+        decoded (codec/decode-bounded encoded 16)]
+    (is (codec/int64? decoded))
+    (is (= decimal #?(:clj (str (codec/int64-value decoded))
+                      :cljs (.toString (codec/int64-value decoded)))))
+    (is (bytes-equal? encoded (codec/encode-value decoded)))))
+
 (deftest bounded-facade-enforces-ability-owned-limits
   (is (= {:format :kotoba.value-boundary/v1
           :codec "kotoba.value.v1"

@@ -29,11 +29,13 @@
     already requires the explicit `Link` wrapper instead of guessing which
     strings are CIDs.
 
-  - **Integers are admitted only in the safe-integer range.** `cbor.core`'s
+  - **Bare integers are admitted only in the safe-integer range.** `cbor.core`'s
     `byte-at` documents that its cljs path is exact only to 2^53 (JS bitwise
     operators truncate to Int32 first, so it divides instead). Admitting a
     wider integer would silently produce different bytes on the two runtimes.
-    Exact i64 needs a BigInt-aware payload and is deferred, not faked.
+    Exact signed 64-bit values use the explicit `int64` wrapper and an 8-byte
+    two's-complement payload, so the CBOR integer path is never asked to narrow
+    a JavaScript BigInt.
 
   - **Set and map order is computed over UNSIGNED encoded bytes.** Sorting by
     raw JVM bytes would order 0x80-0xff before 0x00 on the JVM and after it on
@@ -60,6 +62,7 @@
 (def ^:const code-symbol 6)
 (def ^:const code-bytes 7)
 (def ^:const code-link 8)
+(def ^:const code-int64 9)
 (def ^:const code-vector 16)
 (def ^:const code-list 17)
 (def ^:const code-set 18)
@@ -67,6 +70,8 @@
 
 (def max-safe-integer 9007199254740991)
 (def min-safe-integer -9007199254740991)
+(def max-int64-decimal "9223372036854775807")
+(def min-int64-decimal "-9223372036854775808")
 
 (defn- reject! [problem data]
   (throw (ex-info (str "ipld.value: " (name problem))
@@ -78,6 +83,7 @@
 ;; every platform, while a hand-written IEquiv/IHash on a deftype does not
 ;; resolve under SCI.
 (defrecord Float64 [value])
+(defrecord Int64 [decimal])
 
 (defn float64? [x] (instance? Float64 x))
 
@@ -86,6 +92,55 @@
   not implement direct field access (see `ipld.core`'s Link note)."
   [x]
   (:value x))
+
+(defn int64? [x] (instance? Int64 x))
+
+#?(:cljs
+   (defn- cljs-bigint? [x]
+     (= "bigint" (js* "typeof ~{}" x))))
+
+(defn- normalize-int64-decimal [x]
+  #?(:clj
+     (do
+       (when-not (integer? x)
+         (reject! :value/int64-not-an-integer {:value x}))
+       (let [n (biginteger x)
+             min-n (biginteger min-int64-decimal)
+             max-n (biginteger max-int64-decimal)]
+         (when (or (neg? (compare n min-n)) (pos? (compare n max-n)))
+           (reject! :value/int64-out-of-range
+                    {:value (str n)
+                     :min min-int64-decimal
+                     :max max-int64-decimal}))
+         (str n)))
+     :cljs
+     (let [n (cond
+               (cljs-bigint? x) x
+               (and (number? x) (js/Number.isSafeInteger x)) (js/BigInt x)
+               :else (reject! :value/int64-not-an-exact-integer {:value x}))
+           min-n (js/BigInt min-int64-decimal)
+           max-n (js/BigInt max-int64-decimal)]
+       (when (or (js* "~{} < ~{}" n min-n) (js* "~{} > ~{}" n max-n))
+         (reject! :value/int64-out-of-range
+                  {:value (.toString n)
+                   :min min-int64-decimal
+                   :max max-int64-decimal}))
+       (.toString n))))
+
+(defn int64
+  "Wrap an exact signed 64-bit integer. JVM integers and JavaScript BigInts are
+  normalized to one decimal identity; a JS Number is accepted only while it is
+  a safe integer."
+  [x]
+  (->Int64 (normalize-int64-decimal x)))
+
+(defn int64-value
+  "Return the wrapped exact value as a JVM long or JavaScript BigInt."
+  [x]
+  (when-not (int64? x)
+    (reject! :value/not-int64 {:value x}))
+  #?(:clj (Long/parseLong (:decimal x))
+     :cljs (js/BigInt (:decimal x))))
 
 ;; NaN is NOT detected with `(not= d d)`. That is the textbook identity, and it
 ;; is wrong here: `clojure.lang.Util.equiv` short-circuits on reference
@@ -135,6 +190,25 @@
      :cljs (let [u (js/Uint8Array. (into-array (map #(bit-and % 0xff) (seq bs))))]
              (.getFloat64 (js/DataView. (.-buffer u)) 0 false))))
 
+(defn- int64->bytes [x]
+  #?(:clj (let [n (long (int64-value x))]
+            (byte-array (map (fn [i]
+                               (unchecked-byte
+                                (bit-and (unsigned-bit-shift-right n (* 8 (- 7 i))) 0xff)))
+                             (range 8))))
+     :cljs (let [buf (js/ArrayBuffer. 8)]
+             (.setBigInt64 (js/DataView. buf) 0 (int64-value x) false)
+             (js/Uint8Array. buf))))
+
+(defn- bytes->int64 [bs]
+  #?(:clj (let [n (reduce (fn [acc b]
+                            (bit-or (bit-shift-left (long acc) 8)
+                                    (bit-and (long b) 0xff)))
+                          0 (seq bs))]
+            (->Int64 (Long/toString (long n))))
+     :cljs (let [u (js/Uint8Array. (into-array (map #(bit-and % 0xff) (seq bs))))]
+             (->Int64 (.toString (.getBigInt64 (js/DataView. (.-buffer u)) 0 false))))))
+
 (defn- bytes-like? [x]
   #?(:clj (bytes? x)
      :cljs (or (instance? js/Uint8Array x) (instance? js/Int8Array x))))
@@ -180,6 +254,7 @@
     (nil? x)        [code-nil nil]
     (boolean? x)    [code-boolean x]
     (float64? x)    [code-float (float64->bytes (check-finite! (float64-value x) :encode))]
+    (int64? x)      [code-int64 (int64->bytes x)]
     (integer? x)    (if (<= min-safe-integer x max-safe-integer)
                       [code-integer x]
                       (reject! :value/integer-out-of-range
@@ -226,6 +301,9 @@
                          (reject! :value/float-payload {:payload payload}))
                        ;; a peer must not smuggle NaN/Inf/-0.0 back in
                        (->Float64 (check-finite! (bytes->float64 payload) :decode)))
+      code-int64   (do (when-not (and (bytes-like? payload) (= 8 (byte-count payload)))
+                         (reject! :value/int64-payload {:payload payload}))
+                       (bytes->int64 payload))
       code-string  (if (string? payload) payload (reject! :value/string-payload {:payload payload}))
       code-keyword (if (string? payload)
                      (let [k (keyword payload)]

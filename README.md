@@ -55,6 +55,11 @@ limit and the codec enforces it before data crosses the boundary:
 
 (def bytes (value/encode-bounded {:actor/id 7 :ready true} 4096))
 (value/decode-bounded bytes 4096) ;=> {:actor/id 7, :ready true}
+
+;; Full signed i64 is explicit at the wire adapter. Bare integers retain the
+;; cross-runtime JS-safe contract.
+(value/encode-bounded (value/int64 9223372036854775807) 16) ; JVM
+;; ClojureScript adapters pass (js/BigInt "9223372036854775807").
 ```
 
 The codec id is `kotoba.value.v1`. `kotoba.value.codec` is a stable facade over
@@ -62,6 +67,9 @@ the existing, cross-runtime-qualified `ipld.value` implementation; this change
 does not introduce a second wire format or duplicate its encoder. Value-only
 CLJS consumers load the lightweight Link/base32 adapter and do not need the
 SHA/npm implementation used by content-addressing operations in `ipld.core`.
+Exact i64 uses append-only scalar code `9` with an 8-byte big-endian signed
+two's-complement payload; it never routes a JavaScript BigInt through CBOR's
+Number integer path.
 
 ## Consumers
 
