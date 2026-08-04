@@ -28,79 +28,22 @@
   `links` deep-collects every Link's CID in a node — the one generic walk
   hydrate loops and GC need (kotoba-client uses it instead of knowing any
   node schema)."
-  (:require [clojure.string :as str]
-            [multiformats.core :as mf]
-            [cbor.core :as cbor]))
+  (:require [multiformats.core :as mf]
+            [cbor.core :as cbor]
+            [ipld.link :as link-value]))
 
-;; ── Link ──────────────────────────────────────────────────────────────────────
-(deftype Link [cid]
-  #?@(:clj  [Object
-             (equals [_ other]
-               (and (instance? Link other) (= cid (.-cid ^Link other))))
-             (hashCode [_] (hash cid))
-             (toString [_] (str "#ipld/link \"" cid "\""))]
-      :cljs [IEquiv
-             (-equiv [_ other]
-               (and (instance? Link other) (= cid (.-cid ^Link other))))
-             IHash
-             (-hash [_] (hash cid))
-             Object
-             (toString [_] (str "#ipld/link \"" cid "\""))]))
-
-(defn link
-  "Wrap a base32 'b'-multibase CIDv1 string as an IPLD link."
-  [cid-str]
-  (when-not (and (string? cid-str) (str/starts-with? cid-str "b"))
-    (throw (ex-info "ipld: link expects a base32 'b' multibase CID string"
-                    {:cid cid-str})))
-  (Link. cid-str))
-
-(defn link? [x] (instance? Link x))
-
-(defn link-cid
-  "The CID string inside a Link."
-  [^Link l]
-  (.-cid l))
-
-;; ── tag-42 byte form: 0x00 identity-multibase prefix ++ binary CID ───────────
-(defn- link->tag-bytes [cid-str]
-  (let [body (mf/cid->bytes cid-str)]
-    #?(:clj (byte-array (cons (byte 0) (seq body)))
-       :cljs (js/Uint8Array. (clj->js (cons 0 (seq body)))))))
-
-(defn- tag-bytes->link [bs]
-  (let [xs (map #(bit-and (int %) 0xff) (seq bs))]
-    (when-not (= 0 (first xs))
-      (throw (ex-info "ipld: tag-42 byte string must start with the 0x00 identity multibase prefix"
-                      {:first-byte (first xs)})))
-    (Link. (str "b" (mf/base32 (rest xs))))))
-
-;; The tag-42 wire value on its own, for codecs that compose a Link into a
-;; LARGER cbor form rather than encoding a whole node (`ipld.value`, which
-;; carries a Link as one value position inside its own envelope). Exposed so
-;; that discipline lives here once instead of being re-derived per codec —
-;; a second hand-rolled `0x00 ++ binary CID` is exactly the drift this repo
-;; exists to prevent. `encode`/`decode` are unaffected.
-(defn link->tag
-  "A Link as its bare DAG-CBOR wire value: `cbor/tagged` 42 wrapping
-  `0x00 ++ <binary CID>`."
-  [l]
-  (when-not (link? l)
-    (throw (ex-info "ipld: link->tag expects a Link" {:value l})))
-  (cbor/tagged 42 (link->tag-bytes (link-cid l))))
-
-(defn tag->link
-  "Inverse of `link->tag`. Throws on any other tag, matching `decode`."
-  [t]
-  (when-not (and (cbor/tagged? t) (= 42 (cbor/tag-number t)))
-    (throw (ex-info "ipld: tag->link expects cbor tag 42"
-                    {:tag (when (cbor/tagged? t) (cbor/tag-number t))})))
-  (tag-bytes->link (cbor/tag-value t)))
+;; Compatibility aliases keep the existing `ipld.core` API while allowing
+;; value-only consumers to load `ipld.link` without the hashing namespace.
+(def link link-value/link)
+(def link? link-value/link?)
+(def link-cid link-value/link-cid)
+(def link->tag link-value/link->tag)
+(def tag->link link-value/tag->link)
 
 ;; ── data <-> cbor-with-tags transforms ────────────────────────────────────────
 (defn- ->cbor-data [x]
   (cond
-    (link? x)        (cbor/tagged 42 (link->tag-bytes (link-cid x)))
+    (link? x)        (link->tag x)
     (cbor/tagged? x) (throw (ex-info "ipld: raw cbor tags are not IPLD data — construct links with ipld.core/link"
                                      {:tag (cbor/tag-number x)}))
     (map? x)         (into {}
@@ -116,7 +59,7 @@
 (defn- <-cbor-data [x]
   (cond
     (cbor/tagged? x) (if (= 42 (cbor/tag-number x))
-                       (tag-bytes->link (cbor/tag-value x))
+                       (tag->link x)
                        (throw (ex-info "ipld: DAG-CBOR allows tag 42 only"
                                        {:tag (cbor/tag-number x)})))
     (map? x)         (into {} (map (fn [[k v]] [k (<-cbor-data v)])) x)

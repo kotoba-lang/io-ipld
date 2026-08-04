@@ -59,7 +59,9 @@ limit and the codec enforces it before data crosses the boundary:
 
 The codec id is `kotoba.value.v1`. `kotoba.value.codec` is a stable facade over
 the existing, cross-runtime-qualified `ipld.value` implementation; this change
-does not introduce a second wire format or duplicate its encoder.
+does not introduce a second wire format or duplicate its encoder. Value-only
+CLJS consumers load the lightweight Link/base32 adapter and do not need the
+SHA/npm implementation used by content-addressing operations in `ipld.core`.
 
 ## Consumers
 

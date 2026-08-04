@@ -45,7 +45,7 @@
   cannot hand back a canonically-addressed block whose contents are not in
   canonical form."
   (:require [cbor.core :as cbor]
-            [ipld.core :as ipld]))
+            [ipld.link :as ipld]))
 
 (def codec-id "kotoba.value.v1")
 
