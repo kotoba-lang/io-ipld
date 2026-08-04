@@ -29,3 +29,37 @@
     (is (= 0.5
            (codec/float64-value
             (codec/form->value (codec/value->form wrapped)))))))
+
+(deftest bounded-facade-enforces-ability-owned-limits
+  (is (= {:format :kotoba.value-boundary/v1
+          :codec "kotoba.value.v1"
+          :representation :bytes
+          :limit-authority :ability-max-bytes}
+         codec/wire-contract))
+  (let [value {:actor/id :worker-1 :message ["run" 7]}
+        encoded (codec/encode-value value)
+        size (codec/byte-count encoded)]
+    (is (= value (codec/decode-bounded encoded size)))
+    (is (bytes-equal? encoded (codec/encode-bounded value size)))
+    (doseq [[direction f] [[:encode #(codec/encode-bounded value (dec size))]
+                           [:decode #(codec/decode-bounded encoded (dec size))]]]
+      (try
+        (f)
+        (is false (str direction " must reject an oversized boundary"))
+        (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
+          (is (= :value/max-bytes-exceeded (:problem (ex-data e))))
+          (is (= direction (:direction (ex-data e))))
+          (is (= size (:bytes (ex-data e)))))))))
+
+(deftest bounded-facade-rejects-invalid-boundaries-before-codec-work
+  (doseq [limit [nil 0 -1 1.5]]
+    (try
+      (codec/encode-bounded :ok limit)
+      (is false (str "must reject limit " limit))
+      (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
+        (is (= :value/max-bytes-invalid (:problem (ex-data e)))))))
+  (try
+    (codec/decode-bounded "not bytes" 32)
+    (is false "decode boundary must require bytes")
+    (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
+      (is (= :value/not-bytes (:problem (ex-data e)))))))

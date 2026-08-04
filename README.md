@@ -46,13 +46,15 @@ traverses any block graph by `links` alone.
 ## Canonical Kotoba values
 
 Compiler, provider, actor, and I/O boundaries should use the language-facing
-namespace rather than couple themselves to the IPLD node API:
+namespace rather than couple themselves to the IPLD node API. Ability
+boundaries use the bounded operations; the ability descriptor supplies the
+limit and the codec enforces it before data crosses the boundary:
 
 ```clojure
 (require '[kotoba.value.codec :as value])
 
-(def bytes (value/encode-value {:actor/id 7 :ready true}))
-(value/decode-value bytes) ;=> {:actor/id 7, :ready true}
+(def bytes (value/encode-bounded {:actor/id 7 :ready true} 4096))
+(value/decode-bounded bytes 4096) ;=> {:actor/id 7, :ready true}
 ```
 
 The codec id is `kotoba.value.v1`. `kotoba.value.codec` is a stable facade over
