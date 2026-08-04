@@ -97,7 +97,7 @@
 
 #?(:cljs
    (defn- cljs-bigint? [x]
-     (= "bigint" (js* "typeof ~{}" x))))
+     (and (some? x) (= js/BigInt (.-constructor x)))))
 
 (defn- normalize-int64-decimal [x]
   #?(:clj
@@ -120,7 +120,7 @@
                :else (reject! :value/int64-not-an-exact-integer {:value x}))
            min-n (js/BigInt min-int64-decimal)
            max-n (js/BigInt max-int64-decimal)]
-       (when (or (js* "~{} < ~{}" n min-n) (js* "~{} > ~{}" n max-n))
+       (when (or (< n min-n) (> n max-n))
          (reject! :value/int64-out-of-range
                   {:value (.toString n)
                    :min min-int64-decimal
