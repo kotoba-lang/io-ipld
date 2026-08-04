@@ -43,6 +43,22 @@ maps them to links:
 `links` is the one walk hydrate loops and GC need: `kotoba-lang/kotoba-client`
 traverses any block graph by `links` alone.
 
+## Canonical Kotoba values
+
+Compiler, provider, actor, and I/O boundaries should use the language-facing
+namespace rather than couple themselves to the IPLD node API:
+
+```clojure
+(require '[kotoba.value.codec :as value])
+
+(def bytes (value/encode-value {:actor/id 7 :ready true}))
+(value/decode-value bytes) ;=> {:actor/id 7, :ready true}
+```
+
+The codec id is `kotoba.value.v1`. `kotoba.value.codec` is a stable facade over
+the existing, cross-runtime-qualified `ipld.value` implementation; this change
+does not introduce a second wire format or duplicate its encoder.
+
 ## Consumers
 
 `prolly-tree` (node children), `quad-store` (commit index-roots/prev),
