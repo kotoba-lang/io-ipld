@@ -8,15 +8,37 @@
             [clojure.string :as str]
             [multiformats.base32 :as base32]))
 
+(defprotocol ILink
+  "The one way to read a Link's CID.
+
+  `ipld.core`'s own docstring already states the rule this exists to keep:
+  \"Access NEVER goes through deftype fields at call sites (`.-cid`) — nbb and
+  other lighter cljs runtimes don't implement direct field access, which is
+  exactly how earlier portability bugs stayed invisible.\" This namespace was
+  the place that broke it, in `link-cid` and in both equality implementations.
+
+  Under nbb the consequences were: `link-cid` returned nil, so `link->tag`
+  threw on `(subs nil 1)` and NO node containing a link could be encoded at
+  all; and two links to the same CID compared unequal while hashing equal,
+  which is a broken equality contract — a set of links silently kept
+  duplicates and a map keyed by link silently missed lookups.
+
+  shadow-cljs compiles deftype fields to real properties, so its suite passed,
+  and this repo runs its ClojureScript tests under shadow-cljs. A protocol
+  method works on every runtime, which is the point."
+  (-link-cid [this]))
+
 (deftype Link [cid]
+  ILink
+  (-link-cid [_] cid)
   #?@(:clj [Object
             (equals [_ other]
-              (and (instance? Link other) (= cid (.-cid ^Link other))))
+              (and (instance? Link other) (= cid (-link-cid other))))
             (hashCode [_] (hash cid))
             (toString [_] (str "#ipld/link \"" cid "\""))]
       :cljs [IEquiv
              (-equiv [_ other]
-               (and (instance? Link other) (= cid (.-cid ^Link other))))
+               (and (instance? Link other) (= cid (-link-cid other))))
              IHash
              (-hash [_] (hash cid))
              Object
@@ -32,8 +54,11 @@
 
 (defn link? [x] (instance? Link x))
 
-(defn link-cid [^Link value]
-  (.-cid value))
+(defn link-cid
+  "The CID string inside a Link. Protocol dispatch, never field access —
+  see `ILink`."
+  [value]
+  (-link-cid value))
 
 (defn- link->tag-bytes [cid]
   (let [body (base32/decode (subs cid 1))]
