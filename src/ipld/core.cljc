@@ -19,9 +19,8 @@
 
   In application data a link is the explicit `Link` wrapper: construct
   with `(link cid-string)`, read with `link-cid`, test with `link?`.
-  Access NEVER goes through deftype fields at call sites (`.-cid`) — nbb
-  and other lighter cljs runtimes don't implement direct field access,
-  which is exactly how earlier portability bugs stayed invisible.
+  Access NEVER goes through representation fields at call sites — use the
+  narrow accessor so JVM, compiled ClojureScript, and SCI/nbb agree.
 
   Storage stays injected exactly like prolly-tree/commit-dag:
   `(put-node! put! node)` encodes, CIDs, stores, returns the CID string.

@@ -2,7 +2,8 @@
   "name": "ipld",
   "private": true,
   "scripts": {
-    "test:cljs": "nbb gen-shadow-cljs-edn.cljs && shadow-cljs compile test && node out/test.js"
+    "test:nbb": "nbb --classpath \"$(clojure -Spath)\" run-tests.cljs",
+    "test:cljs": "npm run test:nbb && nbb gen-shadow-cljs-edn.cljs && shadow-cljs compile test && node out/test.js"
   },
   "dependencies": {
     "@noble/hashes": "^1.4.0"

@@ -3,7 +3,7 @@
 [![CI](https://github.com/kotoba-lang/ipld/actions/workflows/ci.yml/badge.svg)](https://github.com/kotoba-lang/ipld/actions/workflows/ci.yml)
 
 **The canonical IPLD DAG-CBOR layer for kotoba-lang — real tag-42 CID links,
-portable `.cljc`, verified on JVM and real ClojureScript (shadow-cljs).**
+portable `.cljc`, verified on JVM, SCI/nbb, and compiled ClojureScript.**
 
 Composes [`kotoba-lang/multiformats`](https://github.com/kotoba-lang/multiformats)
 (CIDv1 sha2-256 assembly) and [`kotoba-lang/dag-cbor`](https://github.com/kotoba-lang/dag-cbor)
@@ -35,7 +35,7 @@ maps them to links:
 (def root (ipld/put-node! put! {"kind" "internal"
                                 "children" [["a" (ipld/link leaf)]]}))
 
-(ipld/get-node get-fn root)   ;=> {"kind" "internal", "children" [["a" #ipld/link …]]}
+(ipld/get-node get-fn root)   ;=> {"kind" "internal", "children" [["a" (ipld/link leaf)]]}
 (ipld/links (ipld/get-node get-fn root))  ;=> [leaf-cid] — generic DAG walk,
                                           ;   no node-schema knowledge needed
 ```
@@ -83,8 +83,9 @@ so the switch is a clean break, recorded in the superproject ADR.
 ## Test
 
 ```bash
-clojure -M:test       # JVM
-npm install && npm run test:cljs   # real ClojureScript (shadow-cljs node-test)
+clojure -M:test                  # JVM
+npm run test:nbb                 # SCI/nbb portability boundary
+npm install && npm run test:cljs # nbb + compiled ClojureScript node-test
 ```
 
 ## License
