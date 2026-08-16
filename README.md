@@ -1,7 +1,5 @@
 # ipld
 
-[![CI](https://github.com/kotoba-lang/ipld/actions/workflows/ci.yml/badge.svg)](https://github.com/kotoba-lang/ipld/actions/workflows/ci.yml)
-
 **The canonical IPLD DAG-CBOR layer for kotoba-lang — real tag-42 CID links,
 portable `.cljc`, verified on JVM, SCI/nbb, and compiled ClojureScript.**
 
@@ -42,6 +40,38 @@ maps them to links:
 
 `links` is the one walk hydrate loops and GC need: `kotoba-lang/kotoba-client`
 traverses any block graph by `links` alone.
+
+## IPLD layers
+
+This repository now keeps IPLD's layers distinct instead of treating CBOR as
+the whole stack:
+
+| namespace | responsibility |
+|---|---|
+| `ipld.data-model` | the eleven Data Model kinds, lossless validation, and the universal `INode` interface used by native values and ADLs |
+| `ipld.core` | strict DAG-CBOR representation plus CID-verified block reads |
+| `ipld.schema` | a portable schema-unification algebra for kinds, maps, lists, tuples, structs, and discriminated unions |
+| `ipld.selector` | field/all/matcher traversal over native values or ADL Nodes, including transparent Link resolution |
+| `ipld.graph` | bounded selector execution with root-first, deduplicated proof blocks suitable for CAR/GraphSync adapters |
+
+The schema maps are the runtime's small mechanical subset, not an IPLD Schema
+DSL parser and not a claim to implement every Schema-Schema feature. A future
+DSL/DMT loader can compile into this algebra without changing consumers.
+
+`ipld.graph/select-blocks` is intentionally transport-neutral. It requires
+explicit block, byte, path-depth, and match limits; rehashes every fetched
+block; and returns the exact root-first block sequence a CAR writer needs.
+`resolve-path` compiles a Data Model path to a selector and returns its proof
+blocks. This is the shared correctness core for:
+
+- an IPFS trustless HTTP gateway adapter that parses HTTP path/range/content
+  negotiation and frames the result as CAR;
+- a GraphSync adapter that maps a wire request's root and selector into this
+  bounded traversal and maps the result into response messages.
+
+Neither wire protocol is claimed here. In particular, this selector algebra is
+a deliberately small executable subset, not byte-compatible serialization of
+the complete IPLD Selector specification.
 
 ## Canonical Kotoba values
 

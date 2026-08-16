@@ -15,7 +15,8 @@
     - tag 42 is the ONLY tag allowed in a block (per the DAG-CBOR spec) —
       `decode` throws on any other tag, `encode` throws on a raw
       `cbor/tagged` (construct links with `link`, nothing else);
-    - map keys must be strings (DAG-CBOR spec) — enforced at `encode`.
+    - map keys must be strings (DAG-CBOR spec) — enforced at `encode` and
+      after `decode`; host keywords are application values, not IPLD keys.
 
   In application data a link is the explicit `Link` wrapper: construct
   with `(link cid-string)`, read with `link-cid`, test with `link?`.
@@ -29,7 +30,8 @@
   node schema)."
   (:require [multiformats.core :as mf]
             [cbor.core :as cbor]
-            [ipld.link :as link-value]))
+            [ipld.link :as link-value]
+            [ipld.data-model :as data-model]))
 
 ;; Compatibility aliases keep the existing `ipld.core` API while allowing
 ;; value-only consumers to load `ipld.link` without the hashing namespace.
@@ -47,7 +49,7 @@
                                      {:tag (cbor/tag-number x)}))
     (map? x)         (into {}
                            (map (fn [[k v]]
-                                  (when-not (or (string? k) (keyword? k))
+                                  (when-not (string? k)
                                     (throw (ex-info "ipld: DAG-CBOR map keys must be strings"
                                                     {:key k})))
                                   [k (->cbor-data v)]))
@@ -69,12 +71,15 @@
 (defn encode
   "Canonical DAG-CBOR bytes for `node` (Clojure data; `Link`s become tag 42)."
   [node]
+  (data-model/validate! node)
   (cbor/encode (->cbor-data node)))
 
 (defn decode
   "DAG-CBOR bytes → Clojure data; tag 42 becomes a `Link`, any other tag throws."
   [bytes]
-  (<-cbor-data (cbor/decode bytes)))
+  (let [node (<-cbor-data (cbor/decode bytes))]
+    (data-model/validate! node)
+    node))
 
 (defn cid
   "CIDv1 dag-cbor sha2-256 of already-encoded block bytes."
@@ -141,6 +146,6 @@
   [node]
   (cond
     (link? node)       [(link-cid node)]
-    (map? node)        (vec (mapcat links (vals node)))
+    (map? node)        (vec (mapcat (comp links val) (sort-by key node)))
     (sequential? node) (vec (mapcat links node))
     :else              []))
