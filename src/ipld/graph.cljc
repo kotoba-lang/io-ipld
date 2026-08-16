@@ -6,6 +6,7 @@
   callers receive root-first, CID-verified blocks and can frame them as CAR or
   GraphSync messages without reimplementing traversal or resource limits."
   (:require [ipld.core :as ipld]
+            [ipld.data-model :as dm]
             [ipld.link :as link]
             [ipld.selector :as selector]))
 
@@ -18,6 +19,206 @@
 
 (defn- byte-length [bytes]
   #?(:clj (alength ^bytes bytes) :cljs (.-length bytes)))
+
+(defn- branch? [node]
+  (contains? #{:map :list} (dm/kind node)))
+
+(defn selection-cursor
+  "Create a checkpointable selector traversal without reading any blocks.
+
+  `advance-cursor` performs the actual reads, at most one new CID-verified
+  block per call. The cursor retains decoded nodes and selector work so a
+  caller can pause, cancel, or resume without replaying storage reads."
+  [root-cid selector-data limits]
+  (let [limits (into {} (map (fn [key] [key (positive-limit limits key)]))
+                     [:max-blocks :max-bytes :max-depth :max-matches])]
+    ;; Validate the complete selector before admitting work.
+    (selector/to-data-model selector-data)
+    {:root root-cid
+     :selector selector-data
+     :limits limits
+     :tasks [{:node (link/link root-cid) :selector selector-data
+              :path [] :recursion-stack []}]
+     :seen #{}
+     :nodes {}
+     :matches []
+     :match-keys #{}
+     :stats {:blocks 0 :bytes 0 :matches 0 :work 0}
+     :done? false}))
+
+(defn cursor-done? [cursor]
+  (:done? cursor))
+
+(defn cursor-result
+  "Return the stable public result accumulated by a selection cursor."
+  [cursor]
+  {:root (:root cursor)
+   :selector (:selector cursor)
+   :matches (:matches cursor)
+   :stats (dissoc (:stats cursor) :work)})
+
+(defn- push-in-order [tasks work]
+  (into tasks (reverse work)))
+
+(defn- resource-limit! [message limit maximum data]
+  (throw (ex-info message (merge {:type :ipld/resource-limit
+                                  :limit limit :maximum maximum}
+                                 data))))
+
+(defn- add-match [cursor node selector-data path]
+  (let [match-key [path (:label selector-data)]]
+    (if (contains? (:match-keys cursor) match-key)
+      cursor
+      (let [next-count (inc (get-in cursor [:stats :matches]))]
+        (when (> next-count (get-in cursor [:limits :max-matches]))
+          (resource-limit! "ipld: selector exceeds match limit" :max-matches
+                           (get-in cursor [:limits :max-matches]) {}))
+        (-> cursor
+            (update :match-keys conj match-key)
+            (update :matches conj
+                    (cond-> {:path path :value node}
+                      (:label selector-data) (assoc :label (:label selector-data))))
+            (assoc-in [:stats :matches] next-count))))))
+
+(defn- recursive-edge-work [task]
+  (let [{:keys [recursion-stack]} task]
+    (when-not (seq recursion-stack)
+      (throw (ex-info "ipld: ExploreRecursiveEdge has no recursive parent"
+                      {:type :ipld/invalid-selector :path (:path task)})))
+    (let [{:keys [sequence mode remaining] :as frame} (peek recursion-stack)]
+      (when (or (= :none mode) (>= remaining 2))
+        [(assoc task
+                :selector sequence
+                :recursion-stack
+                (conj (pop recursion-stack)
+                      (if (= :depth mode) (update frame :remaining dec) frame)))]))))
+
+(defn- expand-task [cursor {:keys [node selector path recursion-stack] :as task}]
+  (let [max-depth (get-in cursor [:limits :max-depth])]
+    (when (> (count path) max-depth)
+      (resource-limit! "ipld: selector exceeds depth limit" :max-depth max-depth
+                       {:path path}))
+    ;; Recursive-edge semantics are decided before link dereference.
+    (if (= :explore-recursive-edge (:selector selector))
+      {:cursor cursor :work (recursive-edge-work task)}
+      (if (link/link? node)
+        {:cursor cursor :link-cid (link/link-cid node)}
+        (case (:selector selector)
+          :matcher {:cursor (add-match cursor node selector path)}
+
+          :explore-fields
+          {:cursor cursor
+           :work (mapv (fn [[segment next-selector]]
+                         {:node (dm/lookup node segment) :selector next-selector
+                          :path (conj path segment) :recursion-stack recursion-stack})
+                       (filter (fn [[segment]] (dm/contains-segment? node segment))
+                               (sort-by (comp pr-str key) (:fields selector))))}
+
+          :explore-all
+          {:cursor cursor
+           :work (mapv (fn [[segment child]]
+                         {:node child :selector (:next selector)
+                          :path (conj path segment) :recursion-stack recursion-stack})
+                       (when (branch? node) (dm/entries node)))}
+
+          :explore-index
+          {:cursor cursor
+           :work (when (and (= :list (dm/kind node))
+                            (dm/contains-segment? node (:index selector)))
+                   [{:node (dm/lookup node (:index selector))
+                     :selector (:next selector)
+                     :path (conj path (:index selector))
+                     :recursion-stack recursion-stack}])}
+
+          :explore-range
+          {:cursor cursor
+           :work (mapv (fn [index]
+                         {:node (dm/lookup node index) :selector (:next selector)
+                          :path (conj path index) :recursion-stack recursion-stack})
+                       (filter #(dm/contains-segment? node %)
+                               (when (= :list (dm/kind node))
+                                 (range (:start selector) (:end selector)))))}
+
+          :explore-union
+          {:cursor cursor
+           :work (mapv #(assoc task :selector %) (:members selector))}
+
+          :explore-recursive
+          (let [{:keys [mode depth]} (:limit selector)]
+            {:cursor cursor
+             :work [(assoc task
+                           :selector (:sequence selector)
+                           :recursion-stack
+                           (conj recursion-stack
+                                 {:sequence (:sequence selector)
+                                  :mode mode :remaining (or depth 0)}))]})
+
+          (throw (ex-info "ipld: unknown selector"
+                          {:type :ipld/invalid-selector
+                           :selector selector :path path})))))))
+
+(defn- read-link [cursor get-fn task cid]
+  (if (contains? (:seen cursor) cid)
+    {:cursor cursor :task (assoc task :node (get-in cursor [:nodes cid]))}
+    (let [bytes (or (ipld/get-verified-block get-fn cid)
+                    (throw (ex-info "ipld: selected block is missing"
+                                    {:type :ipld/missing-block :cid cid})))
+          next-blocks (inc (get-in cursor [:stats :blocks]))
+          next-bytes (+ (get-in cursor [:stats :bytes]) (byte-length bytes))
+          max-blocks (get-in cursor [:limits :max-blocks])
+          max-bytes (get-in cursor [:limits :max-bytes])]
+      (when (> next-blocks max-blocks)
+        (resource-limit! "ipld: selected graph exceeds block limit"
+                         :max-blocks max-blocks {}))
+      (when (> next-bytes max-bytes)
+        (resource-limit! "ipld: selected graph exceeds byte limit"
+                         :max-bytes max-bytes {}))
+      (let [node (ipld/decode bytes)]
+        {:cursor (-> cursor
+                     (update :seen conj cid)
+                     (assoc-in [:nodes cid] node)
+                     (assoc-in [:stats :blocks] next-blocks)
+                     (assoc-in [:stats :bytes] next-bytes))
+         :task (assoc task :node node)
+         :block {:cid cid :bytes bytes}}))))
+
+(defn advance-cursor
+  "Advance selector work under a positive CPU work budget.
+
+  Returns `{:cursor ... :block? ... :yielded? ... :done? ...}`. A call reads
+  at most one previously unseen block. `:yielded?` means the work budget was
+  consumed before another block or completion and the returned cursor can be
+  resumed verbatim."
+  [cursor get-fn max-work]
+  (when-not (and (integer? max-work) (pos? max-work))
+    (throw (ex-info "ipld: cursor requires a positive work budget"
+                    {:type :ipld/invalid-limit :limit :max-work :value max-work})))
+  (when-not (fn? get-fn)
+    (throw (ex-info "ipld: cursor requires a block getter"
+                    {:type :ipld/invalid-cursor-options})))
+  (loop [cursor cursor remaining max-work]
+    (cond
+      (:done? cursor) {:cursor cursor :done? true}
+      (empty? (:tasks cursor))
+      (let [cursor (assoc cursor :done? true)]
+        {:cursor cursor :done? true})
+      (zero? remaining) {:cursor cursor :yielded? true :done? false}
+      :else
+      (let [task (peek (:tasks cursor))
+            cursor (-> cursor
+                       (update :tasks pop)
+                       (update-in [:stats :work] inc))
+            expanded (expand-task cursor task)]
+        (if-let [cid (:link-cid expanded)]
+          (let [{:keys [cursor task block]} (read-link (:cursor expanded)
+                                                       get-fn task cid)
+                cursor (update cursor :tasks conj task)]
+            (if block
+              {:cursor cursor :block block :done? false}
+              (recur cursor (dec remaining))))
+          (recur (update (:cursor expanded) :tasks
+                         push-in-order (or (:work expanded) []))
+                 (dec remaining)))))))
 
 (defn select-blocks
   "Resolve `root-cid` with an IPLD selector and return the matched nodes plus

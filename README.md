@@ -61,6 +61,11 @@ DSL/DMT loader can compile into this algebra without changing consumers.
 `ipld.graph/select-blocks` is intentionally transport-neutral. It requires
 explicit block, byte, path-depth, and match limits; rehashes every fetched
 block; and returns the exact root-first block sequence a CAR writer needs.
+For backpressured transports, `selection-cursor` creates a read-free,
+checkpointable traversal and `advance-cursor` performs at most one new
+CID-verified block read under an explicit CPU work budget. Decoded nodes and
+selector work remain in the returned immutable cursor, so cancellation does
+not require another read and resumption does not replay prior storage reads.
 `resolve-path` compiles a Data Model path to a selector and returns its proof
 blocks. This is the shared correctness core for:
 
