@@ -48,3 +48,32 @@
                 limits)]
     (is (= [["child" "name"] ["name"]] (mapv :path (:matches result))))
     (is (= ["leaf" "root"] (mapv :value (:matches result))))))
+
+(deftest recursive-selector-walks-linked-dag-under-both-limits
+  (let [store (atom {})
+        put! (fn [cid bytes] (swap! store assoc cid bytes))
+        leaf (ipld/put-node! put! {"name" "leaf"})
+        middle (ipld/put-node! put! {"name" "middle" "child" (ipld/link leaf)})
+        root (ipld/put-node! put! {"name" "root" "child" (ipld/link middle)})
+        recursive (fn [limit]
+                    {:selector :explore-recursive
+                     :limit limit
+                     :sequence {:selector :explore-union
+                                :members [{:selector :matcher}
+                                          {:selector :explore-all
+                                           :next {:selector :explore-recursive-edge}}]}})
+        finite (graph/select-blocks #(get @store %) root
+                                    (recursive {:mode :depth :depth 2}) limits)
+        unbounded (graph/select-blocks #(get @store %) root
+                                       (recursive {:mode :none}) limits)]
+    (is (= #{[] ["name"] ["child"]}
+           (set (map :path (:matches finite)))))
+    (is (= [root middle] (mapv :cid (:blocks finite))))
+    (is (= [root middle leaf] (mapv :cid (:blocks unbounded))))
+    (is (some #(= ["child" "child" "name"] (:path %)) (:matches unbounded)))))
+
+(deftest integer-path-segments-compile-to-explore-index
+  (is (= {:selector :explore-fields
+          :fields {"items" {:selector :explore-index :index 1
+                             :next {:selector :matcher}}}}
+         (graph/path-selector ["items" 1]))))

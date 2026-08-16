@@ -51,7 +51,7 @@ the whole stack:
 | `ipld.data-model` | the nine Data Model kinds, lossless validation, and the universal `INode` interface used by native values and ADLs |
 | `ipld.core` | strict DAG-CBOR representation plus CID-verified block reads |
 | `ipld.schema` | a portable schema-unification algebra for kinds, maps, lists, tuples, structs, and discriminated unions |
-| `ipld.selector` | field/all/matcher traversal over native values or ADL Nodes, including transparent Link resolution and strict Selector Data Model/DAG-CBOR codecs |
+| `ipld.selector` | non-conditional IPLD selectors over native values or ADL Nodes, including bounded recursion, transparent Link resolution, and strict Data Model/DAG-CBOR codecs |
 | `ipld.graph` | bounded selector execution with root-first, deduplicated proof blocks suitable for CAR/GraphSync adapters |
 
 The schema maps are the runtime's small mechanical subset, not an IPLD Schema
@@ -70,11 +70,14 @@ blocks. This is the shared correctness core for:
   bounded traversal and maps the result into response messages.
 
 Neither transport wire protocol is claimed here. `ipld.selector/encode` and
-`decode` are byte-compatible DAG-CBOR serialization of the Matcher,
-ExploreAll, and ExploreFields portion of the IPLD Selector schema. The
-executable algebra remains deliberately smaller than the complete draft:
-conditions, labels, recursion, ranges, indexes, and unions are rejected rather
-than approximated.
+`decode` serialize Matcher (including labels), ExploreAll, ExploreFields,
+ExploreIndex, ExploreRange, ExploreUnion, ExploreRecursive, and
+ExploreRecursiveEdge using the compact IPLD Selector schema. Recursive
+execution is available only through bounded `select-graph`; finite depth and
+`none` recursion are both still fenced by the traversal's mandatory block,
+byte, path-depth, and match limits. The draft Condition algebra remains
+excluded because the upstream specification itself still marks it incomplete;
+conditions are rejected rather than approximated.
 
 ## Canonical Kotoba values
 

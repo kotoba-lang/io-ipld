@@ -80,7 +80,9 @@
   transparently resolved by `select-blocks`."
   [path]
   (reduce (fn [next-selector segment]
-            {:selector :explore-fields :fields {segment next-selector}})
+            (if (integer? segment)
+              {:selector :explore-index :index segment :next next-selector}
+              {:selector :explore-fields :fields {segment next-selector}}))
           {:selector :matcher}
           (reverse path)))
 
