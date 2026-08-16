@@ -21,3 +21,24 @@
          (selector/select {"value" nil}
                           {:selector :explore-fields
                            :fields {"value" {:selector :matcher}}}))))
+
+(deftest compact-selector-data-model-and-dag-cbor-round-trip
+  (let [executable {:selector :explore-fields
+                    :fields {"child" {:selector :explore-all
+                                       :next {:selector :matcher}}}}
+        compact {"f" {"f>" {"child" {"a" {">" {"." {}}}}}}}]
+    (is (= compact (selector/to-data-model executable)))
+    (is (= executable (selector/from-data-model compact)))
+    (is (= executable (selector/decode (selector/encode executable))))))
+
+(deftest selector-wire-boundary-fails-closed
+  (doseq [bad [{"." {"label" "not-supported"}}
+               {"R" {"l" {"depth" 3} ":>" {"@" {}}}}
+               {"a" {}}
+               {"f" {"f>" {0 {"." {}}}}}
+               {"." {} "a" {">" {"." {}}}}]]
+    (is (thrown? #?(:clj Exception :cljs js/Error)
+                 (selector/from-data-model bad))))
+  (is (thrown? #?(:clj Exception :cljs js/Error)
+               (selector/to-data-model {:selector :explore-fields
+                                        :fields {0 {:selector :matcher}}}))))

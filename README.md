@@ -51,7 +51,7 @@ the whole stack:
 | `ipld.data-model` | the nine Data Model kinds, lossless validation, and the universal `INode` interface used by native values and ADLs |
 | `ipld.core` | strict DAG-CBOR representation plus CID-verified block reads |
 | `ipld.schema` | a portable schema-unification algebra for kinds, maps, lists, tuples, structs, and discriminated unions |
-| `ipld.selector` | field/all/matcher traversal over native values or ADL Nodes, including transparent Link resolution |
+| `ipld.selector` | field/all/matcher traversal over native values or ADL Nodes, including transparent Link resolution and strict Selector Data Model/DAG-CBOR codecs |
 | `ipld.graph` | bounded selector execution with root-first, deduplicated proof blocks suitable for CAR/GraphSync adapters |
 
 The schema maps are the runtime's small mechanical subset, not an IPLD Schema
@@ -69,9 +69,12 @@ blocks. This is the shared correctness core for:
 - a GraphSync adapter that maps a wire request's root and selector into this
   bounded traversal and maps the result into response messages.
 
-Neither wire protocol is claimed here. In particular, this selector algebra is
-a deliberately small executable subset, not byte-compatible serialization of
-the complete IPLD Selector specification.
+Neither transport wire protocol is claimed here. `ipld.selector/encode` and
+`decode` are byte-compatible DAG-CBOR serialization of the Matcher,
+ExploreAll, and ExploreFields portion of the IPLD Selector schema. The
+executable algebra remains deliberately smaller than the complete draft:
+conditions, labels, recursion, ranges, indexes, and unions are rejected rather
+than approximated.
 
 ## Canonical Kotoba values
 
