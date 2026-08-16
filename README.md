@@ -63,10 +63,14 @@ inline, stringprefix, and bytesprefix), string/int enums, unit/any types, and
 declared advanced representations. `ipld.schema/compile-schema` validates
 all named references; `unify!` matches representation values under mandatory
 depth/node budgets and requires a caller-owned validator capability before an
-advanced representation can execute. The stringpairs/stringjoin struct/map
-families, tuple `fieldOrder`, and full typed interpretation of implicit values
-remain explicitly rejected or unexecuted, not approximated; this is not yet
-the complete Schema-Schema surface.
+advanced representation can execute. Tuple and stringjoin `fieldOrder`, map
+and struct stringpairs, struct stringjoin/listpairs, and typed scalar implicit
+values are executable. `representation->logical!` restores logical struct
+field names and implicit values; `logical->representation!` performs the
+inverse projection and validates its output. Delimiter-based representations
+fail closed on duplicate keys, non-canonical numeric text, and unescaped
+delimiter collisions. Advanced representations remain capability-defined ADL
+boundaries rather than schema-owned transformations.
 
 `ipld.graph/select-blocks` is intentionally transport-neutral. It requires
 explicit block, byte, path-depth, and match limits; rehashes every fetched

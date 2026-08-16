@@ -49,6 +49,106 @@
     (fail! :definition-must-have-one-kind {:where where :definition definition}))
   (first definition))
 
+(defn- struct-field-order! [body details representation]
+  (let [declared (vec (keys (get body "fields")))
+        requested (get details "fieldOrder")
+        order (if (nil? requested) declared (vec requested))]
+    (when (and requested
+               (or (not (sequential? requested))
+                   (not (every? string? requested))
+                   (not= (count order) (count (distinct order)))
+                   (not= (set order) (set declared))))
+      (fail! :invalid-field-order
+             {:representation representation
+              :declared declared :field-order requested}))
+    order))
+
+(defn- delimiters! [details representation]
+  (let [inner (get details "innerDelim")
+        entry (get details "entryDelim")]
+    (when-not (and (string? inner) (pos? (count inner))
+                   (string? entry) (pos? (count entry))
+                   (not= inner entry))
+      (fail! :invalid-stringpairs-delimiters
+             {:representation representation
+              :inner-delim inner :entry-delim entry}))
+    [inner entry]))
+
+(defn- validate-struct-representation! [name body]
+  (let [representation (get body "representation" {"map" {}})
+        [strategy details] (one-entry! representation name)
+        fields (get body "fields")]
+    (case strategy
+      "map"
+      (let [wire-names (map (fn [[field _]]
+                              (get-in details ["fields" field "rename"] field))
+                            fields)]
+        (when-not (= (count wire-names) (count (distinct wire-names)))
+          (fail! :duplicate-representation-field {:type-name name :fields wire-names})))
+      "tuple"
+      (do
+        (struct-field-order! body details strategy)
+        (when (some (fn [[field spec]]
+                      (or (true? (get spec "optional"))
+                          (contains? (get-in body ["representation" "map" "fields" field] {})
+                                     "implicit")))
+                    fields)
+          (fail! :tuple-optional-not-supported {:type-name name})))
+      "stringjoin"
+      (do
+        (when-not (and (string? (get details "join"))
+                       (pos? (count (get details "join"))))
+          (fail! :invalid-stringjoin-delimiter {:type-name name}))
+        (struct-field-order! body details strategy)
+        (when (some (fn [[_ spec]] (true? (get spec "optional"))) fields)
+          (fail! :stringjoin-optional-not-supported {:type-name name})))
+      "stringpairs" (delimiters! details strategy)
+      "listpairs" nil
+      (fail! :unsupported-struct-representation
+             {:type-name name :representation representation}))))
+
+(defn- validate-representation! [name definition]
+  (let [[kind body] (one-entry! definition name)]
+    (case kind
+      "struct" (validate-struct-representation! name body)
+      "map" (when-let [details (get-in body ["representation" "stringpairs"])]
+              (delimiters! details "stringpairs"))
+      nil)))
+
+(defn- string-representable? [types ref seen]
+  (let [definition (if (string? ref) (get types ref) ref)
+        [kind body] (one-entry! definition :string-representation)]
+    (case kind
+      ("string" "bool" "int" "float") true
+      "enum" (contains? (get body "representation" {"string" {}}) "string")
+      "copy" (let [next-ref (get body "fromType")]
+               (and (not (contains? seen next-ref))
+                    (string-representable? types next-ref (conj seen next-ref))))
+      false)))
+
+(defn- validate-string-representations! [name definition types]
+  (let [[kind body] (one-entry! definition name)
+        representation (get body "representation")]
+    (case kind
+      "map"
+      (when (contains? representation "stringpairs")
+        (when (or (true? (get body "valueNullable"))
+                  (not (string-representable? types (get body "keyType") #{}))
+                  (not (string-representable? types (get body "valueType") #{})))
+          (fail! :type-has-no-string-representation {:type-name name})))
+
+      "struct"
+      (when (or (contains? representation "stringpairs")
+                (contains? representation "stringjoin"))
+        (doseq [[field spec] (get body "fields")]
+          (when (or (true? (get spec "nullable"))
+                    (not (string-representable? types (get spec "type") #{})))
+            (fail! :type-has-no-string-representation
+                   {:type-name name :field field}))))
+      nil)))
+
+(declare implicit-value! unify-ref!)
+
 (defn- type-refs [definition]
   (let [[kind body] (one-entry! definition :reference-scan)]
     (case kind
@@ -103,7 +203,11 @@
       (let [[kind _] (one-entry! definition name)]
         (when-not (contains? supported-kinds kind)
           (fail! :unsupported-type-kind {:name name :kind kind}))))
-    (let [all-types (merge prelude types)]
+    (let [all-types (merge prelude types)
+          compiled {:dmt dmt :types all-types :advanced (set (keys advanced))}]
+      (doseq [[name definition] types]
+        (validate-representation! name definition)
+        (validate-string-representations! name definition all-types))
       (doseq [[name definition] types
               reference (type-refs definition)]
         (when-not (contains? all-types reference)
@@ -112,7 +216,18 @@
               adl (adl-refs definition)]
         (when-not (contains? advanced adl)
           (fail! :unknown-advanced-reference {:type-name name :advanced adl})))
-      {:dmt dmt :types all-types :advanced (set (keys advanced))})))
+      (doseq [[name definition] types
+              :let [[kind body] (one-entry! definition name)]
+              :when (= kind "struct")
+              [field spec] (get body "fields")
+              :let [details (get-in body ["representation" "map" "fields" field] {})]
+              :when (contains? details "implicit")]
+        (let [state {:max-depth 32 :max-nodes 64 :nodes (atom 0)
+                     :adl-validators {}}
+              typed (implicit-value! compiled (get spec "type")
+                                     (get details "implicit") [name field])]
+          (unify-ref! compiled state (get spec "type") typed 0 [name field])))
+      compiled)))
 
 (defn- positive-limit! [limits key]
   (let [n (get limits key)]
@@ -127,6 +242,75 @@
       (fail! :max-nodes-exceeded {:path path :max-nodes (:max-nodes state)}))))
 
 (declare unify-ref!)
+
+(defn- parse-int-text! [text path]
+  (when-not (re-matches #"-?(0|[1-9][0-9]*)" text)
+    (fail! :invalid-integer-text {:path path :value text}))
+  (try
+    #?(:clj (Long/parseLong text)
+       :cljs (let [n (js/Number text)]
+               (when-not (js/Number.isSafeInteger n)
+                 (fail! :integer-out-of-range {:path path :value text}))
+               n))
+    (catch #?(:clj NumberFormatException :cljs :default) _
+      (fail! :integer-out-of-range {:path path :value text}))))
+
+(defn- parse-float-text! [text path]
+  (when-not (re-matches #"-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?" text)
+    (fail! :invalid-float-text {:path path :value text}))
+  (let [n #?(:clj (Double/parseDouble text) :cljs (js/Number text))]
+    (when #?(:clj (or (Double/isInfinite n) (Double/isNaN n))
+             :cljs (not (js/Number.isFinite n)))
+      (fail! :invalid-float-text {:path path :value text}))
+    n))
+
+(defn- text-value! [compiled ref text path]
+  (let [definition (if (string? ref) (get-in compiled [:types ref]) ref)
+        [kind body] (one-entry! definition path)]
+    (case kind
+      "copy" (text-value! compiled (get body "fromType") text path)
+      "string" text
+      "bool" (case text "true" true "false" false
+                    (fail! :invalid-boolean-text {:path path :value text}))
+      "int" (parse-int-text! text path)
+      "float" (parse-float-text! text path)
+      "enum" (if (contains? (get body "representation") "string")
+               text
+               (fail! :type-has-no-string-representation {:path path :kind kind}))
+      (fail! :type-has-no-string-representation {:path path :kind kind}))))
+
+(defn- unify-text-ref! [compiled state ref text depth path]
+  (unify-ref! compiled state ref (text-value! compiled ref text path) depth path))
+
+(defn- implicit-value! [compiled ref raw path]
+  (if (string? raw)
+    (text-value! compiled ref raw path)
+    raw))
+
+(defn- split-literal [text delimiter]
+  (when-not (string? text) (fail! :expected-string {:value text}))
+  (if (empty? text)
+    []
+    (loop [start 0 out []]
+      (if-let [at (str/index-of text delimiter start)]
+        (recur (+ at (count delimiter)) (conj out (subs text start at)))
+        (conj out (subs text start))))))
+
+(defn- parse-string-pairs! [value details path]
+  (when-not (string? value)
+    (fail! :expected-stringpairs {:path path :actual (data-kind value)}))
+  (let [[inner entry] (delimiters! details "stringpairs")]
+    (mapv (fn [[i item]]
+            (let [parts (split-literal item inner)]
+              (when-not (= 2 (count parts))
+                (fail! :invalid-stringpair {:path (conj path i) :value item}))
+              parts))
+          (map-indexed vector (split-literal value entry)))))
+
+(defn- ensure-unique-keys! [pairs path]
+  (let [keys* (map first pairs)]
+    (when-not (= (count keys*) (count (distinct keys*)))
+      (fail! :duplicate-pair-key {:path path}))))
 
 (defn- nullable-ref! [compiled state ref nullable? value depth path]
   (if (nil? value)
@@ -158,6 +342,17 @@
                          (true? (get body "valueNullable")) (second pair)
                          (inc depth) (conj path i 1))))
 
+      (contains? representation "stringpairs")
+      (let [pairs (parse-string-pairs! value (get representation "stringpairs") path)]
+        (ensure-unique-keys! pairs path)
+        (doseq [[i [k v]] (map-indexed vector pairs)]
+          (unify-text-ref! compiled state (get body "keyType") k
+                           (inc depth) (conj path i 0))
+          (when (true? (get body "valueNullable"))
+            (fail! :nullable-has-no-string-form {:path (conj path i 1)}))
+          (unify-text-ref! compiled state (get body "valueType") v
+                           (inc depth) (conj path i 1))))
+
       (contains? representation "advanced")
       (let [name (get representation "advanced")
             validator (get-in state [:adl-validators name])]
@@ -183,9 +378,16 @@
         (when (and (not present?) (not (true? (get spec "optional"))) (not implicit?))
           (fail! :missing-struct-field {:path (conj path wire-key)}))
         (when present?
-          (nullable-ref! compiled state (get spec "type")
-                         (true? (get spec "nullable")) (get value wire-key)
-                         (inc depth) (conj path wire-key)))))))
+          (let [wire-value (get value wire-key)]
+            (nullable-ref! compiled state (get spec "type")
+                           (true? (get spec "nullable")) wire-value
+                           (inc depth) (conj path wire-key))
+            (when (and implicit?
+                       (= wire-value
+                          (implicit-value! compiled (get spec "type")
+                                           (get-in field-details [field "implicit"])
+                                           (conj path wire-key))))
+              (fail! :explicit-implicit-value {:path (conj path wire-key)}))))))))
 
 (defn- struct-representation! [compiled state body value depth path]
   (let [representation (get body "representation" {"map" {}})]
@@ -194,13 +396,68 @@
       (struct-map! compiled state body (get representation "map") value depth path)
 
       (contains? representation "tuple")
-      (let [fields (vec (get body "fields"))]
+      (let [details (get representation "tuple")
+            order (struct-field-order! body details "tuple")
+            fields (mapv (fn [field] [field (get-in body ["fields" field])]) order)]
         (when-not (and (sequential? value) (= (count fields) (count value)))
           (fail! :invalid-struct-tuple {:path path :expected (count fields)}))
         (doseq [[[field spec] item] (map vector fields value)]
           (nullable-ref! compiled state (get spec "type")
                          (true? (get spec "nullable")) item
                          (inc depth) (conj path field))))
+
+      (contains? representation "stringpairs")
+      (let [pairs (parse-string-pairs! value (get representation "stringpairs") path)
+            fields (get body "fields")]
+        (ensure-unique-keys! pairs path)
+        (doseq [[field _] pairs]
+          (when-not (contains? fields field)
+            (fail! :unknown-struct-field {:path (conj path field)})))
+        (doseq [[field spec] fields]
+          (let [entry (first (filter #(= field (first %)) pairs))]
+            (when (and (nil? entry) (not (true? (get spec "optional"))))
+              (fail! :missing-struct-field {:path (conj path field)}))
+            (when entry
+              (when (true? (get spec "nullable"))
+                (fail! :nullable-has-no-string-form {:path (conj path field)}))
+              (unify-text-ref! compiled state (get spec "type") (second entry)
+                               (inc depth) (conj path field))))))
+
+      (contains? representation "listpairs")
+      (let [fields (get body "fields")]
+        (when-not (sequential? value) (fail! :expected-listpairs {:path path}))
+        (let [pairs (mapv (fn [[i pair]]
+                            (when-not (and (sequential? pair) (= 2 (count pair))
+                                           (string? (first pair)))
+                              (fail! :invalid-listpair {:path (conj path i)}))
+                            (vec pair))
+                          (map-indexed vector value))]
+          (ensure-unique-keys! pairs path)
+          (doseq [[field _] pairs]
+            (when-not (contains? fields field)
+              (fail! :unknown-struct-field {:path (conj path field)})))
+          (doseq [[field spec] fields]
+            (let [entry (first (filter #(= field (first %)) pairs))]
+              (when (and (nil? entry) (not (true? (get spec "optional"))))
+                (fail! :missing-struct-field {:path (conj path field)}))
+              (when entry
+                (nullable-ref! compiled state (get spec "type")
+                               (true? (get spec "nullable")) (second entry)
+                               (inc depth) (conj path field)))))))
+
+      (contains? representation "stringjoin")
+      (let [details (get representation "stringjoin")
+            order (struct-field-order! body details "stringjoin")
+            values (split-literal value (get details "join"))]
+        (when-not (= (count order) (count values))
+          (fail! :invalid-stringjoin-arity
+                 {:path path :expected (count order) :actual (count values)}))
+        (doseq [[field item] (map vector order values)]
+          (let [spec (get-in body ["fields" field])]
+            (when (true? (get spec "nullable"))
+              (fail! :nullable-has-no-string-form {:path (conj path field)}))
+            (unify-text-ref! compiled state (get spec "type") item
+                             (inc depth) (conj path field)))))
 
       :else (fail! :unsupported-struct-representation {:representation representation}))))
 
@@ -335,6 +592,313 @@
                :adl-validators (or (:adl-validators limits) {})}]
     (unify-ref! compiled state type-name value 0 [])
     {:type type-name :nodes @(:nodes state) :value value}))
+
+(declare decode-ref encode-ref)
+
+(defn- decode-nullable [compiled ref nullable? value path]
+  (if (nil? value)
+    (if nullable? nil (fail! :unexpected-null {:path path}))
+    (decode-ref compiled ref value path)))
+
+(defn- decode-map [compiled body value path]
+  (let [representation (get body "representation")
+        pairs (cond
+                (or (nil? representation) (contains? representation "map")) value
+                (contains? representation "listpairs") value
+                (contains? representation "stringpairs")
+                (parse-string-pairs! value (get representation "stringpairs") path)
+                :else (fail! :projection-not-supported
+                             {:path path :representation representation}))]
+    (into {}
+          (map-indexed
+           (fn [i [k v]]
+             [(if (contains? representation "stringpairs")
+                (text-value! compiled (get body "keyType") k (conj path i 0))
+                (decode-ref compiled (get body "keyType") k (conj path i 0)))
+              (if (contains? representation "stringpairs")
+                (text-value! compiled (get body "valueType") v (conj path i 1))
+                (decode-nullable compiled (get body "valueType")
+                                 (true? (get body "valueNullable")) v
+                                 (conj path i 1)))])
+           pairs))))
+
+(defn- decode-struct [compiled body value path]
+  (let [representation (get body "representation" {"map" {}})
+        fields (get body "fields")]
+    (cond
+      (contains? representation "map")
+      (let [details (get representation "map")]
+        (into {}
+              (keep (fn [[field spec]]
+                      (let [wire (get-in details ["fields" field "rename"] field)
+                            configured (get-in details ["fields" field] {})]
+                        (cond
+                          (contains? value wire)
+                          [field (decode-nullable compiled (get spec "type")
+                                                  (true? (get spec "nullable"))
+                                                  (get value wire) (conj path wire))]
+                          (contains? configured "implicit")
+                          [field (implicit-value! compiled (get spec "type")
+                                                  (get configured "implicit")
+                                                  (conj path field))]
+                          :else nil)))
+                    fields)))
+
+      (contains? representation "tuple")
+      (let [order (struct-field-order! body (get representation "tuple") "tuple")]
+        (into {} (map (fn [field item]
+                        (let [spec (get fields field)]
+                          [field (decode-nullable compiled (get spec "type")
+                                                  (true? (get spec "nullable")) item
+                                                  (conj path field))]))
+                      order value)))
+
+      (contains? representation "stringpairs")
+      (into {}
+            (map (fn [[field text]]
+                   [field (text-value! compiled (get-in fields [field "type"])
+                                       text (conj path field))]))
+            (parse-string-pairs! value (get representation "stringpairs") path))
+
+      (contains? representation "listpairs")
+      (into {}
+            (map (fn [[field item]]
+                   (let [spec (get fields field)]
+                     [field (decode-nullable compiled (get spec "type")
+                                             (true? (get spec "nullable")) item
+                                             (conj path field))])))
+            value)
+
+      (contains? representation "stringjoin")
+      (let [details (get representation "stringjoin")
+            order (struct-field-order! body details "stringjoin")
+            values (split-literal value (get details "join"))]
+        (into {} (map (fn [field text]
+                        [field (text-value! compiled (get-in fields [field "type"])
+                                            text (conj path field))])
+                      order values)))
+
+      :else value)))
+
+(defn- decode-enum [body value path]
+  (let [members (get body "members")
+        representation (get body "representation" {"string" {}})
+        [strategy mapping] (one-entry! representation path)]
+    (or (some (fn [member]
+                (when (= value (get mapping member member)) member))
+              members)
+        (fail! :invalid-enum-value {:path path :value value :representation strategy}))))
+
+(defn- decode-ref [compiled ref value path]
+  (let [definition (if (string? ref) (get-in compiled [:types ref]) ref)
+        [kind body] (one-entry! definition path)]
+    (case kind
+      "copy" (decode-ref compiled (get body "fromType") value path)
+      "list" (mapv (fn [i item]
+                      (decode-nullable compiled (get body "valueType")
+                                       (true? (get body "valueNullable")) item
+                                       (conj path i)))
+                    (range) value)
+      "map" (decode-map compiled body value path)
+      "struct" (decode-struct compiled body value path)
+      "enum" (decode-enum body value path)
+      value)))
+
+(defn representation->logical!
+  "Validate a representation value, then return its logical typed value.
+  Struct field names and typed implicit values are restored."
+  [compiled type-name value limits]
+  (let [result (unify! compiled type-name value limits)]
+    (assoc result :logical-value (decode-ref compiled type-name value []))))
+
+(defn- encode-text! [compiled ref value path]
+  (let [definition (if (string? ref) (get-in compiled [:types ref]) ref)
+        [kind body] (one-entry! definition path)]
+    (case kind
+      "copy" (encode-text! compiled (get body "fromType") value path)
+      "string" (if (string? value) value
+                    (fail! :kind-mismatch {:path path :expected kind :actual (data-kind value)}))
+      "bool" (if (boolean? value) (if value "true" "false")
+                  (fail! :kind-mismatch {:path path :expected kind :actual (data-kind value)}))
+      "int" (if (integer? value) (str value)
+                 (fail! :kind-mismatch {:path path :expected kind :actual (data-kind value)}))
+      "float" (if (number? value) (str value)
+                   (fail! :kind-mismatch {:path path :expected kind :actual (data-kind value)}))
+      "enum" (let [mapping (get-in body ["representation" "string"] ::missing)]
+               (when (= ::missing mapping)
+                 (fail! :type-has-no-string-representation {:path path :kind kind}))
+               (if (contains? (set (get body "members")) value)
+                 (str (get mapping value value))
+                 (fail! :invalid-enum-value {:path path :value value})))
+      (fail! :type-has-no-string-representation {:path path :kind kind}))))
+
+(defn- no-delimiter! [text delimiters path]
+  (when (some #(str/includes? text %) delimiters)
+    (fail! :unescaped-delimiter {:path path :value text :delimiters delimiters}))
+  text)
+
+(defn- encode-nullable [compiled state ref nullable? value depth path]
+  (if (nil? value)
+    (if nullable? nil (fail! :unexpected-null {:path path}))
+    (encode-ref compiled state ref value depth path)))
+
+(defn- logical-fields! [body value path]
+  (when-not (and (map? value) (every? string? (keys value)))
+    (fail! :expected-logical-struct {:path path}))
+  (let [fields (get body "fields")]
+    (doseq [field (keys value)]
+      (when-not (contains? fields field)
+        (fail! :unknown-struct-field {:path (conj path field)})))
+    fields))
+
+(defn- encode-struct [compiled state body value depth path]
+  (let [fields (logical-fields! body value path)
+        representation (get body "representation" {"map" {}})]
+    (cond
+      (contains? representation "map")
+      (let [details (get representation "map")]
+        (into {}
+              (keep (fn [[field spec]]
+                      (let [wire (get-in details ["fields" field "rename"] field)
+                            configured (get-in details ["fields" field] {})
+                            present? (contains? value field)]
+                        (cond
+                          (and (not present?) (true? (get spec "optional"))) nil
+                          (not present?) (fail! :missing-struct-field {:path (conj path field)})
+                          (and (contains? configured "implicit")
+                               (= (get value field)
+                                  (implicit-value! compiled (get spec "type")
+                                                   (get configured "implicit")
+                                                   (conj path field)))) nil
+                          :else [wire (encode-nullable compiled state (get spec "type")
+                                                       (true? (get spec "nullable"))
+                                                       (get value field) (inc depth)
+                                                       (conj path field))]))))
+                    fields))
+
+      (contains? representation "tuple")
+      (mapv (fn [field]
+              (when-not (contains? value field)
+                (fail! :missing-struct-field {:path (conj path field)}))
+              (let [spec (get fields field)]
+                (encode-nullable compiled state (get spec "type")
+                                 (true? (get spec "nullable")) (get value field)
+                                 (inc depth) (conj path field))))
+            (struct-field-order! body (get representation "tuple") "tuple"))
+
+      (contains? representation "listpairs")
+      (into []
+            (keep (fn [[field spec]]
+                    (cond
+                      (contains? value field)
+                      [field (encode-nullable compiled state (get spec "type")
+                                              (true? (get spec "nullable"))
+                                              (get value field) (inc depth)
+                                              (conj path field))]
+                      (true? (get spec "optional")) nil
+                      :else (fail! :missing-struct-field {:path (conj path field)}))))
+            fields)
+
+      (contains? representation "stringpairs")
+      (let [details (get representation "stringpairs")
+            [inner entry] (delimiters! details "stringpairs")]
+        (str/join entry
+                  (keep (fn [[field spec]]
+                          (cond
+                            (contains? value field)
+                            (let [text (encode-text! compiled (get spec "type")
+                                                     (get value field) (conj path field))]
+                              (str (no-delimiter! field [inner entry] (conj path field :key))
+                                   inner
+                                   (no-delimiter! text [inner entry] (conj path field))))
+                            (true? (get spec "optional")) nil
+                            :else (fail! :missing-struct-field {:path (conj path field)})))
+                        fields)))
+
+      (contains? representation "stringjoin")
+      (let [details (get representation "stringjoin")
+            join (get details "join")]
+        (str/join join
+                  (map (fn [field]
+                         (when-not (contains? value field)
+                           (fail! :missing-struct-field {:path (conj path field)}))
+                         (no-delimiter!
+                          (encode-text! compiled (get-in fields [field "type"])
+                                        (get value field) (conj path field))
+                          [join] (conj path field)))
+                       (struct-field-order! body details "stringjoin"))))
+
+      :else (fail! :projection-not-supported {:path path :representation representation}))))
+
+(defn- encode-map [compiled state body value depth path]
+  (when-not (map? value) (fail! :expected-logical-map {:path path}))
+  (let [representation (get body "representation")]
+    (cond
+      (contains? representation "stringpairs")
+      (let [[inner entry] (delimiters! (get representation "stringpairs") "stringpairs")]
+        (str/join entry
+                  (map (fn [[kt vt]] (str kt inner vt))
+                       (sort-by first
+                                (map-indexed
+                                 (fn [i [k v]]
+                                   [(no-delimiter!
+                                     (encode-text! compiled (get body "keyType") k
+                                                   (conj path i 0))
+                                     [inner entry] (conj path i 0))
+                                    (no-delimiter!
+                                     (encode-text! compiled (get body "valueType") v
+                                                   (conj path i 1))
+                                     [inner entry] (conj path i 1))])
+                                 value)))))
+
+      (or (nil? representation) (contains? representation "map")
+          (contains? representation "listpairs"))
+      (let [pairs (mapv (fn [[k v]]
+                          [(encode-ref compiled state (get body "keyType") k
+                                       (inc depth) (conj path k :key))
+                           (encode-nullable compiled state (get body "valueType")
+                                            (true? (get body "valueNullable")) v
+                                            (inc depth) (conj path k))])
+                        value)]
+        (if (contains? representation "listpairs") pairs (into {} pairs)))
+
+      :else (fail! :projection-not-supported {:path path :representation representation}))))
+
+(defn- encode-enum [body value path]
+  (when-not (contains? (set (get body "members")) value)
+    (fail! :invalid-enum-member {:path path :value value}))
+  (let [[_ mapping] (one-entry! (get body "representation" {"string" {}}) path)]
+    (get mapping value value)))
+
+(defn- encode-ref [compiled state ref value depth path]
+  (consume! state depth path)
+  (let [definition (if (string? ref) (get-in compiled [:types ref]) ref)
+        [kind body] (one-entry! definition path)]
+    (case kind
+      "copy" (encode-ref compiled state (get body "fromType") value (inc depth) path)
+      "list" (do
+                 (when-not (sequential? value) (fail! :expected-logical-list {:path path}))
+                 (mapv (fn [i item]
+                         (encode-nullable compiled state (get body "valueType")
+                                          (true? (get body "valueNullable")) item
+                                          (inc depth) (conj path i)))
+                       (range) value))
+      "map" (encode-map compiled state body value depth path)
+      "struct" (encode-struct compiled state body value depth path)
+      "enum" (encode-enum body value path)
+      value)))
+
+(defn logical->representation!
+  "Project a logical typed value to its IPLD Data Model representation.
+  The projected value is validated under the same mandatory resource limits."
+  [compiled type-name logical-value limits]
+  (let [state {:max-depth (positive-limit! limits :max-depth)
+               :max-nodes (positive-limit! limits :max-nodes)
+               :nodes (atom 0)
+               :adl-validators (or (:adl-validators limits) {})}
+        value (encode-ref compiled state type-name logical-value 0 [])
+        checked (unify! compiled type-name value limits)]
+    (assoc checked :logical-value logical-value)))
 
 (declare legacy-valid?)
 

@@ -37,21 +37,30 @@
                   literal (subs source i (inc end))]
               (recur (inc end)
                      (conj out {:kind :string :value (reader/read-string literal) :at i})))
-            (or (boolean (re-matches #"[A-Za-z0-9]" (str c))) (= c \_) (= c \-))
+            (or (boolean (re-matches #"[0-9]" (str c)))
+                (and (= c \-) (< (inc i) n)
+                     (boolean (re-matches #"[0-9]" (str (nth source (inc i)))))))
+            (let [value (re-find #"^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?"
+                                 (subs source i))
+                  value (first value)
+                  integer? (boolean (re-matches #"-?[0-9]+" value))]
+              (recur (+ i (count value))
+                     (conj out {:kind (if integer? :int :float)
+                                :value (if integer?
+                                         #?(:clj (Long/parseLong value)
+                                            :cljs (js/Number value))
+                                         #?(:clj (Double/parseDouble value)
+                                            :cljs (js/Number value)))
+                                :at i})))
+            (or (boolean (re-matches #"[A-Za-z]" (str c))) (= c \_) (= c \-))
             (let [end (loop [j (inc i)]
                         (if (and (< j n)
                                  (let [x (nth source j)]
                                    (or (boolean (re-matches #"[A-Za-z0-9]" (str x)))
                                        (= x \_) (= x \-))))
                           (recur (inc j)) j))
-                  value (subs source i end)
-                  integer? (boolean (re-matches #"-?[0-9]+" value))]
-              (recur end (conj out {:kind (if integer? :int :id)
-                                    :value (if integer?
-                                             #?(:clj (Long/parseLong value)
-                                                :cljs (js/Number value))
-                                             value)
-                                    :at i})))
+                  value (subs source i end)]
+              (recur end (conj out {:kind :id :value value :at i})))
             :else (fail! :unexpected-character {:at i :character (str c)})))))))
 
 (defn- parser [source] {:tokens (vec (tokenize source)) :index (atom 0)})
@@ -113,7 +122,7 @@
 (defn- literal! [p]
   (let [{:keys [kind value] :as token} (take-token! p)]
     (case kind
-      (:string :int) value
+      (:string :int :float) value
       :id (case value "true" true "false" false "null" nil
                 (fail! :expected-literal {:actual token}))
       (fail! :expected-literal {:actual token}))))
