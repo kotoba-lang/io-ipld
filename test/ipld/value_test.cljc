@@ -191,9 +191,11 @@
 
 (deftest keyword-keys-survive-persistence
   ;; The defect that motivates the whole codec: through the NODE codec a
-  ;; keyword comes back as a string, so the value read is not the value
-  ;; written even though its CID verifies.
-  (is (= {"a" 1} (ipld/decode (ipld/encode {:a 1}))) "node codec: keyword key -> string")
+  ;; keyword used to come back as a string, so the value read was not the value
+  ;; written even though its CID verified. The node codec now rejects that
+  ;; lossy input; the value codec is the explicit representation strategy.
+  (is (thrown? #?(:clj Exception :cljs js/Error) (ipld/encode {:a 1}))
+      "node codec: lossy keyword keys are rejected")
   (is (= {:a 1} (v/decode-value (v/encode-value {:a 1}))) "value codec: keyword key stays a keyword")
   (is (set? (v/decode-value (v/encode-value #{"x" "y"})))))
 
