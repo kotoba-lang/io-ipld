@@ -48,7 +48,7 @@ the whole stack:
 
 | namespace | responsibility |
 |---|---|
-| `ipld.data-model` | the eleven Data Model kinds, lossless validation, and the universal `INode` interface used by native values and ADLs |
+| `ipld.data-model` | the nine Data Model kinds, lossless validation, and the universal `INode` interface used by native values and ADLs |
 | `ipld.core` | strict DAG-CBOR representation plus CID-verified block reads |
 | `ipld.schema` | a portable schema-unification algebra for kinds, maps, lists, tuples, structs, and discriminated unions |
 | `ipld.selector` | field/all/matcher traversal over native values or ADL Nodes, including transparent Link resolution |
