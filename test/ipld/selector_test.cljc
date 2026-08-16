@@ -31,9 +31,39 @@
     (is (= executable (selector/from-data-model compact)))
     (is (= executable (selector/decode (selector/encode executable))))))
 
+(deftest index-range-union-and-labelled-matcher
+  (let [node ["zero" "one" "two" "three"]
+        query {:selector :explore-union
+               :members [{:selector :explore-index :index 0
+                          :next {:selector :matcher :label "first"}}
+                         {:selector :explore-range :start 2 :end 4
+                          :next {:selector :matcher}}]}]
+    (is (= [{:path [0] :value "zero" :label "first"}
+            {:path [2] :value "two"}
+            {:path [3] :value "three"}]
+           (selector/select node query)))
+    (is (= query (selector/decode (selector/encode query))))))
+
+(deftest recursive-selector-uses-the-standard-keyed-union-shape
+  (let [query {:selector :explore-recursive
+               :limit {:mode :depth :depth 3}
+               :sequence {:selector :explore-union
+                          :members [{:selector :matcher}
+                                    {:selector :explore-all
+                                     :next {:selector :explore-recursive-edge}}]}}
+        compact {"R" {"l" {"depth" 3}
+                       ":>" {"|" [{"." {}}
+                                    {"a" {">" {"@" {}}}}]}}}]
+    (is (= compact (selector/to-data-model query)))
+    (is (= query (selector/from-data-model compact)))
+    (is (= query (selector/decode (selector/encode query))))))
+
 (deftest selector-wire-boundary-fails-closed
-  (doseq [bad [{"." {"label" "not-supported"}}
-               {"R" {"l" {"depth" 3} ":>" {"@" {}}}}
+  (doseq [bad [{"." {"onlyIf" {}}}
+               {"R" {"l" {"depth" 3} ":>" {"." {}}}}
+               {"@" {}}
+               {"|" [{"." {}}]}
+               {"r" {"^" 2 "$" 2 ">" {"." {}}}}
                {"a" {}}
                {"f" {"f>" {0 {"." {}}}}}
                {"." {} "a" {">" {"." {}}}}]]
@@ -41,4 +71,9 @@
                  (selector/from-data-model bad))))
   (is (thrown? #?(:clj Exception :cljs js/Error)
                (selector/to-data-model {:selector :explore-fields
-                                        :fields {0 {:selector :matcher}}}))))
+                                        :fields {0 {:selector :matcher}}})))
+  (is (thrown? #?(:clj Exception :cljs js/Error)
+               (selector/to-data-model
+                {:selector :explore-recursive
+                 :limit {:mode :none}
+                 :sequence {:selector :matcher}}))))

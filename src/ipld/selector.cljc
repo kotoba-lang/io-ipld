@@ -16,23 +16,71 @@
     (invalid-selector "ipld: malformed selector data model"
                       {:context context :expected-keys expected :value value})))
 
-(declare to-data-model from-data-model)
+(declare to-data-model* from-data-model*)
 
-(defn to-data-model
-  "Compile the supported executable selector subset to the compact IPLD
-  Selector Data Model representation from the prescriptive draft schema.
+(defn- non-negative-int! [value context]
+  (when-not (and (integer? value) (<= 0 value))
+    (invalid-selector "ipld: selector index/depth must be a non-negative integer"
+                      {:context context :value value}))
+  value)
 
-  Supported forms are Matcher, ExploreAll, and ExploreFields. Unsupported
-  conditions, labels, recursion, ranges, indexes, and unions fail closed."
+(defn- recursion-limit->data [{:keys [mode depth] :as limit}]
+  (case mode
+    :depth (do (exact-keys! limit #{:mode :depth} :recursion-limit)
+               {"depth" (non-negative-int! depth :recursion-depth)})
+    :none (do (exact-keys! limit #{:mode} :recursion-limit)
+              {"none" {}})
+    (invalid-selector "ipld: unknown recursion limit" {:limit limit})))
+
+(defn- recursion-limit-from-data [value]
+  (when-not (and (map? value) (= 1 (count value)))
+    (invalid-selector "ipld: recursion limit must be a single-member keyed union"
+                      {:value value}))
+  (let [[tag body] (first value)]
+    (case tag
+      "depth" {:mode :depth :depth (non-negative-int! body :recursion-depth)}
+      "none" (do (exact-keys! body #{} :recursion-limit-none) {:mode :none})
+      (invalid-selector "ipld: unknown recursion limit member" {:tag tag}))))
+
+(defn- union-members! [members context]
+  (when-not (and (sequential? members) (<= 2 (count members)))
+    (invalid-selector "ipld: ExploreUnion requires at least two members"
+                      {:context context :members members}))
+  members)
+
+(defn- contains-recursive-edge?
+  "True when this sequence has an edge for its nearest recursive parent.
+  Nested ExploreRecursive selectors establish their own scope and do not count."
   [selector]
   (case (:selector selector)
+    :explore-recursive-edge true
+    :explore-recursive false
+    :explore-all (contains-recursive-edge? (:next selector))
+    :explore-fields (boolean (some contains-recursive-edge? (vals (:fields selector))))
+    :explore-index (contains-recursive-edge? (:next selector))
+    :explore-range (contains-recursive-edge? (:next selector))
+    :explore-union (boolean (some contains-recursive-edge? (:members selector)))
+    false))
+
+(defn to-data-model
+  "Compile the executable non-conditional selector algebra to the compact
+  IPLD Selector Data Model representation."
+  [selector]
+  (to-data-model* selector 0))
+
+(defn- to-data-model* [selector recursive-depth]
+  (case (:selector selector)
     :matcher
-    (do (exact-keys! selector #{:selector} :matcher)
-        {"." {}})
+    (do
+      (when-not (contains? #{#{:selector} #{:selector :label}} (set (keys selector)))
+        (invalid-selector "ipld: malformed Matcher" {:selector selector}))
+      (when-not (or (nil? (:label selector)) (string? (:label selector)))
+        (invalid-selector "ipld: Matcher label must be a string" {:selector selector}))
+      {"." (cond-> {} (:label selector) (assoc "label" (:label selector)))})
 
     :explore-all
     (do (exact-keys! selector #{:selector :next} :explore-all)
-        {"a" {">" (to-data-model (:next selector))}})
+        {"a" {">" (to-data-model* (:next selector) recursive-depth)}})
 
     :explore-fields
     (do
@@ -42,28 +90,80 @@
         (invalid-selector "ipld: ExploreFields keys must be strings"
                           {:selector selector}))
       {"f" {"f>" (into {} (map (fn [[field next-selector]]
-                                  [field (to-data-model next-selector)]))
+                                  [field (to-data-model* next-selector recursive-depth)]))
                               (:fields selector))}})
 
+    :explore-index
+    (do
+      (exact-keys! selector #{:selector :index :next} :explore-index)
+      {"i" {"i" (non-negative-int! (:index selector) :explore-index)
+            ">" (to-data-model* (:next selector) recursive-depth)}})
+
+    :explore-range
+    (do
+      (exact-keys! selector #{:selector :start :end :next} :explore-range)
+      (let [start (non-negative-int! (:start selector) :explore-range-start)
+            end (non-negative-int! (:end selector) :explore-range-end)]
+        (when-not (< start end)
+          (invalid-selector "ipld: ExploreRange end must be greater than start"
+                            {:start start :end end}))
+        {"r" {"^" start "$" end
+              ">" (to-data-model* (:next selector) recursive-depth)}}))
+
+    :explore-union
+    (do
+      (exact-keys! selector #{:selector :members} :explore-union)
+      {"|" (mapv #(to-data-model* % recursive-depth)
+                  (union-members! (:members selector) :explore-union))})
+
+    :explore-recursive
+    (do
+      (exact-keys! selector #{:selector :limit :sequence} :explore-recursive)
+      (when-not (contains-recursive-edge? (:sequence selector))
+        (invalid-selector "ipld: ExploreRecursive sequence requires a recursive edge"
+                          {:selector selector}))
+      {"R" {"l" (recursion-limit->data (:limit selector))
+            ":>" (to-data-model* (:sequence selector) (inc recursive-depth))}})
+
+    :explore-recursive-edge
+    (do
+      (exact-keys! selector #{:selector} :explore-recursive-edge)
+      (when-not (pos? recursive-depth)
+        (invalid-selector "ipld: ExploreRecursiveEdge must be beneath ExploreRecursive"
+                          {:selector selector}))
+      {"@" {}})
+
     (invalid-selector "ipld: unsupported selector"
-                      {:selector selector :supported #{:matcher :explore-all :explore-fields}})))
+                      {:selector selector
+                       :supported #{:matcher :explore-all :explore-fields
+                                    :explore-index :explore-range :explore-union
+                                    :explore-recursive :explore-recursive-edge}})))
 
 (defn from-data-model
   "Parse the supported compact IPLD Selector Data Model representation.
   Shape checks are exact so an unsupported selector is never silently widened
   or interpreted as a nearby supported form."
   [value]
-  (do
-    (when-not (and (map? value) (= 1 (count value)))
-      (invalid-selector "ipld: selector must be a single-member keyed union"
-                        {:value value}))
-    (let [[tag body] (first value)]
-      (case tag
-        "." (do (exact-keys! body #{} :matcher)
-                {:selector :matcher})
+  (from-data-model* value 0))
+
+(defn- from-data-model* [value recursive-depth]
+  (when-not (and (map? value) (= 1 (count value)))
+    (invalid-selector "ipld: selector must be a single-member keyed union"
+                      {:value value}))
+  (let [[tag body] (first value)]
+    (case tag
+        "." (do
+              (when-not (and (map? body)
+                             (contains? #{#{} #{"label"}} (set (keys body))))
+                (invalid-selector "ipld: malformed Matcher data model" {:value body}))
+              (when-not (or (not (contains? body "label"))
+                            (string? (get body "label")))
+                (invalid-selector "ipld: Matcher label must be a string" {:value body}))
+              (cond-> {:selector :matcher}
+                (contains? body "label") (assoc :label (get body "label"))))
         "a" (do (exact-keys! body #{">"} :explore-all)
                 {:selector :explore-all
-                 :next (from-data-model (get body ">"))})
+                 :next (from-data-model* (get body ">") recursive-depth)})
         "f" (do
               (exact-keys! body #{"f>"} :explore-fields)
               (let [fields (get body "f>")]
@@ -72,10 +172,43 @@
                                     {:value fields}))
                 {:selector :explore-fields
                  :fields (into {} (map (fn [[field next-value]]
-                                         [field (from-data-model next-value)]))
+                                         [field (from-data-model* next-value recursive-depth)]))
                                fields)}))
-        (invalid-selector "ipld: unsupported selector union member"
-                          {:tag tag :supported #{"." "a" "f"}})))))
+        "i" (do
+              (exact-keys! body #{"i" ">"} :explore-index)
+              {:selector :explore-index
+               :index (non-negative-int! (get body "i") :explore-index)
+               :next (from-data-model* (get body ">") recursive-depth)})
+        "r" (do
+              (exact-keys! body #{"^" "$" ">"} :explore-range)
+              (let [start (non-negative-int! (get body "^") :explore-range-start)
+                    end (non-negative-int! (get body "$") :explore-range-end)]
+                (when-not (< start end)
+                  (invalid-selector "ipld: ExploreRange end must be greater than start"
+                                    {:start start :end end}))
+                {:selector :explore-range :start start :end end
+                 :next (from-data-model* (get body ">") recursive-depth)}))
+        "|" {:selector :explore-union
+              :members (mapv #(from-data-model* % recursive-depth)
+                             (union-members! body :explore-union))}
+        "R" (do
+              (exact-keys! body #{"l" ":>"} :explore-recursive)
+              (let [result {:selector :explore-recursive
+                            :limit (recursion-limit-from-data (get body "l"))
+                            :sequence (from-data-model* (get body ":>")
+                                                        (inc recursive-depth))}]
+                (when-not (contains-recursive-edge? (:sequence result))
+                  (invalid-selector "ipld: ExploreRecursive sequence requires a recursive edge"
+                                    {:value value}))
+                result))
+        "@" (do
+              (exact-keys! body #{} :explore-recursive-edge)
+              (when-not (pos? recursive-depth)
+                (invalid-selector "ipld: ExploreRecursiveEdge must be beneath ExploreRecursive"
+                                  {:value value}))
+              {:selector :explore-recursive-edge})
+      (invalid-selector "ipld: unsupported selector union member"
+                        {:tag tag :supported #{"." "a" "f" "i" "r" "|" "R" "@"}}))))
 
 (defn encode
   "Encode a supported selector as canonical DAG-CBOR bytes."
@@ -94,7 +227,8 @@
 
 (defn- select* [node selector path]
   (case (:selector selector)
-    :matcher [{:path path :value node}]
+    :matcher [(cond-> {:path path :value node}
+                (:label selector) (assoc :label (:label selector)))]
     :explore-fields
     (mapcat (fn [[segment next-selector]]
               (when (dm/contains-segment? node segment)
@@ -105,11 +239,27 @@
     (mapcat (fn [[segment child]]
               (select* child (:next selector) (conj path segment)))
             (when (branch? node) (dm/entries node)))
+    :explore-index
+    (when (and (= :list (dm/kind node))
+               (dm/contains-segment? node (:index selector)))
+      (select* (dm/lookup node (:index selector)) (:next selector)
+               (conj path (:index selector))))
+    :explore-range
+    (mapcat (fn [index]
+              (when (dm/contains-segment? node index)
+                (select* (dm/lookup node index) (:next selector) (conj path index))))
+            (when (= :list (dm/kind node)) (range (:start selector) (:end selector))))
+    :explore-union
+    (distinct (mapcat #(select* node % path) (:members selector)))
+    (:explore-recursive :explore-recursive-edge)
+    (invalid-selector "ipld: recursive selectors require bounded select-graph"
+                      {:selector selector :path path})
     (throw (ex-info "ipld: unknown selector" {:selector selector :path path}))))
 
 (defn select
   "Return `{:path ... :value ...}` matches described by selector data."
   [node selector]
+  (to-data-model selector)
   (vec (select* node selector [])))
 
 (declare select-graph*)
@@ -120,28 +270,71 @@
       (recur (resolve-link value path))
       value)))
 
-(defn- select-graph* [node selector path {:keys [resolve-link max-depth]}]
+(defn- recurse-edge [node path options recursion-stack]
+  (when-not (seq recursion-stack)
+    (invalid-selector "ipld: ExploreRecursiveEdge has no recursive parent"
+                      {:path path}))
+  (let [{:keys [sequence mode remaining] :as frame} (peek recursion-stack)]
+    (if (or (= :none mode) (>= remaining 2))
+      (let [next-frame (if (= :depth mode)
+                         (update frame :remaining dec)
+                         frame)]
+        (select-graph* node sequence path options
+                       (conj (pop recursion-stack) next-frame)))
+      [])))
+
+(defn- select-graph* [node selector path {:keys [resolve-link max-depth] :as options}
+                      recursion-stack]
   (when (> (count path) max-depth)
     (throw (ex-info "ipld: selector exceeds depth limit"
                     {:type :ipld/resource-limit :limit :max-depth
                      :maximum max-depth :path path})))
-  (let [node (dereference node path resolve-link)]
+  ;; A depth-exhausted recursive edge must be decided before dereferencing the
+  ;; child. Fetching it first would include one extra proof block that the
+  ;; selector never traversed.
+  (if (= :explore-recursive-edge (:selector selector))
+    (recurse-edge node path options recursion-stack)
+    (let [node (dereference node path resolve-link)]
     (case (:selector selector)
-      :matcher [{:path path :value node}]
+      :matcher [(cond-> {:path path :value node}
+                  (:label selector) (assoc :label (:label selector)))]
       :explore-fields
       (mapcat (fn [[segment next-selector]]
                 (when (dm/contains-segment? node segment)
                   (let [child (dm/lookup node segment)]
                     (select-graph* child next-selector (conj path segment)
-                                   {:resolve-link resolve-link :max-depth max-depth}))))
+                                   options recursion-stack))))
               (sort-by (comp pr-str key) (:fields selector)))
       :explore-all
       (mapcat (fn [[segment child]]
                 (select-graph* child (:next selector) (conj path segment)
-                               {:resolve-link resolve-link :max-depth max-depth}))
+                               options recursion-stack))
               (when (branch? node) (dm/entries node)))
+      :explore-index
+      (when (and (= :list (dm/kind node))
+                 (dm/contains-segment? node (:index selector)))
+        (select-graph* (dm/lookup node (:index selector)) (:next selector)
+                       (conj path (:index selector)) options recursion-stack))
+      :explore-range
+      (mapcat (fn [index]
+                (when (dm/contains-segment? node index)
+                  (select-graph* (dm/lookup node index) (:next selector)
+                                 (conj path index) options recursion-stack)))
+              (when (= :list (dm/kind node)) (range (:start selector) (:end selector))))
+      :explore-union
+      (distinct (mapcat #(select-graph* node % path options recursion-stack)
+                        (:members selector)))
+      :explore-recursive
+      (let [{:keys [mode depth]} (:limit selector)]
+        (when-not (contains-recursive-edge? (:sequence selector))
+          (invalid-selector "ipld: ExploreRecursive sequence requires a recursive edge"
+                            {:selector selector :path path}))
+        (select-graph* node (:sequence selector) path options
+                       (conj recursion-stack
+                             {:sequence (:sequence selector)
+                              :mode mode :remaining (or depth 0)})))
       (throw (ex-info "ipld: unknown selector"
-                      {:type :ipld/invalid-selector :selector selector :path path})))))
+                      {:type :ipld/invalid-selector :selector selector :path path}))))))
 
 (defn select-graph
   "Traverse through Links using `:resolve-link`. `:max-depth` and
@@ -155,7 +348,8 @@
                  (integer? max-matches) (pos? max-matches))
     (throw (ex-info "ipld: graph selector requires positive limits"
                     {:type :ipld/invalid-selector-options :options options})))
-  (let [matches (vec (select-graph* node selector [] options))]
+  (to-data-model selector)
+  (let [matches (vec (select-graph* node selector [] options []))]
     (when (> (count matches) max-matches)
       (throw (ex-info "ipld: selector exceeds match limit"
                       {:type :ipld/resource-limit :limit :max-matches
