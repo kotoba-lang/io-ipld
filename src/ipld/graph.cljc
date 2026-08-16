@@ -8,7 +8,8 @@
   (:require [ipld.core :as ipld]
             [ipld.data-model :as dm]
             [ipld.link :as link]
-            [ipld.selector :as selector]))
+            [ipld.selector :as selector]
+            [ipld.value :as value]))
 
 (defn- positive-limit [limits k]
   (let [n (get limits k)]
@@ -56,6 +57,42 @@
    :selector (:selector cursor)
    :matches (:matches cursor)
    :stats (dissoc (:stats cursor) :work)})
+
+(def cursor-checkpoint-version 1)
+
+(defn- encode-node-fields [cursor]
+  (-> cursor
+      (update :nodes #(into {} (map (fn [[cid node]] [cid (ipld/encode node)])) %))
+      (update :tasks #(mapv (fn [task] (update task :node ipld/encode)) %))
+      (update :matches #(mapv (fn [match] (update match :value ipld/encode)) %))))
+
+(defn- decode-node-fields [cursor]
+  (-> cursor
+      (update :nodes #(into {} (map (fn [[cid bytes]] [cid (ipld/decode bytes)])) %))
+      (update :tasks #(mapv (fn [task] (update task :node ipld/decode)) %))
+      (update :matches #(mapv (fn [match] (update match :value ipld/decode)) %))))
+
+(defn checkpoint-cursor
+  "Encode an immutable cursor as canonical `kotoba.value.v1` bytes. Decoded
+  IPLD nodes are individually DAG-CBOR encoded so floats and Links retain
+  their Data Model identity across JVM/CLJS restoration."
+  [cursor]
+  (value/encode-value
+   {:checkpoint/version cursor-checkpoint-version
+    :checkpoint/cursor (encode-node-fields cursor)}))
+
+(defn restore-cursor
+  "Restore a cursor checkpoint, rejecting unknown versions or malformed state."
+  [bytes]
+  (let [envelope (value/decode-value bytes)]
+    (when-not (and (map? envelope)
+                   (= #{:checkpoint/version :checkpoint/cursor}
+                      (set (keys envelope)))
+                   (= cursor-checkpoint-version (:checkpoint/version envelope))
+                   (map? (:checkpoint/cursor envelope)))
+      (throw (ex-info "ipld: invalid selection cursor checkpoint"
+                      {:type :ipld/invalid-checkpoint})))
+    (decode-node-fields (:checkpoint/cursor envelope))))
 
 (defn- push-in-order [tasks work]
   (into tasks (reverse work)))

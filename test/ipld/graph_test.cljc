@@ -133,3 +133,17 @@
     (is (= [middle leaf] (mapv :cid (:blocks drained))))
     (is (= (:matches eager)
            (:matches (graph/cursor-result (:cursor drained)))))))
+
+(deftest selection-cursor-checkpoint-round-trips-mid-traversal
+  (let [{:keys [root leaf get-fn]} (fixture)
+        selector (graph/path-selector ["child" "score"])
+        first-step (graph/advance-cursor
+                    (graph/selection-cursor root selector limits) get-fn 32)
+        bytes (graph/checkpoint-cursor (:cursor first-step))
+        restored (graph/restore-cursor bytes)
+        drained (drain-cursor restored get-fn)]
+    (is (= root (get-in first-step [:block :cid])))
+    (is (= [leaf] (mapv :cid (:blocks drained))))
+    (is (= 1.1 (-> drained :cursor graph/cursor-result :matches first :value)))
+    (is (thrown? #?(:clj Exception :cljs js/Error)
+                 (graph/restore-cursor (ipld/encode {"version" 999}))))))
