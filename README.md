@@ -50,13 +50,23 @@ the whole stack:
 |---|---|
 | `ipld.data-model` | the nine Data Model kinds, lossless validation, and the universal `INode` interface used by native values and ADLs |
 | `ipld.core` | strict DAG-CBOR representation plus CID-verified block reads |
-| `ipld.schema` | a portable schema-unification algebra for kinds, maps, lists, tuples, structs, and discriminated unions |
+| `ipld.schema-dsl` | the user-facing IPLD Schema syntax compiled into normalized Schema DMT |
+| `ipld.schema` | DMT reference validation and bounded representation unification, including ADL validator capabilities |
 | `ipld.selector` | non-conditional IPLD selectors over native values or ADL Nodes, including bounded recursion, transparent Link resolution, and strict Data Model/DAG-CBOR codecs |
 | `ipld.graph` | bounded selector execution with root-first, deduplicated proof blocks suitable for CAR/GraphSync adapters |
 
-The schema maps are the runtime's small mechanical subset, not an IPLD Schema
-DSL parser and not a claim to implement every Schema-Schema feature. A future
-DSL/DMT loader can compile into this algebra without changing consumers.
+Schema DMT is the runtime source of truth. `ipld.schema-dsl/parse` handles the
+prelude scalar types, named copies, typed/untyped links, inline maps/lists,
+nullable values, optional fields, map/tuple structs with field rename or
+implicit annotations, all six union representations (keyed, kinded, envelope,
+inline, stringprefix, and bytesprefix), string/int enums, unit/any types, and
+declared advanced representations. `ipld.schema/compile-schema` validates
+all named references; `unify!` matches representation values under mandatory
+depth/node budgets and requires a caller-owned validator capability before an
+advanced representation can execute. The stringpairs/stringjoin struct/map
+families, tuple `fieldOrder`, and full typed interpretation of implicit values
+remain explicitly rejected or unexecuted, not approximated; this is not yet
+the complete Schema-Schema surface.
 
 `ipld.graph/select-blocks` is intentionally transport-neutral. It requires
 explicit block, byte, path-depth, and match limits; rehashes every fetched

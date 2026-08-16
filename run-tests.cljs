@@ -1,5 +1,5 @@
 (ns run-tests
-  "The `ipld.link` suite on nbb.
+  "The lightweight Link and Schema suites on nbb.
 
    The compiled ClojureScript suite cannot expose SCI's type/protocol boundary.
    This is therefore a required, separate qualification target for consumers
@@ -10,7 +10,8 @@
 
      nbb --classpath \"$(clojure -Spath)\" run-tests.cljs"
   (:require [cljs.test :as t]
-            [ipld.link-test]))
+            [ipld.link-test]
+            [ipld.schema-test]))
 
 (defmethod t/report [:cljs.test/default :end-run-tests] [m]
   (println (str "\nnbb: " (:test m) " tests, " (:pass m) " passed, "
@@ -18,4 +19,4 @@
   (when (pos? (+ (or (:fail m) 0) (or (:error m) 0)))
     (set! (.-exitCode js/process) 1)))
 
-(t/run-tests 'ipld.link-test)
+(t/run-tests 'ipld.link-test 'ipld.schema-test)
