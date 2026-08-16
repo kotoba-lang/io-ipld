@@ -77,3 +77,59 @@
           :fields {"items" {:selector :explore-index :index 1
                              :next {:selector :matcher}}}}
          (graph/path-selector ["items" 1]))))
+
+(defn drain-cursor [cursor get-fn]
+  (loop [cursor cursor blocks []]
+    (let [advanced (graph/advance-cursor cursor get-fn 32)
+          blocks (cond-> blocks (:block advanced) (conj (:block advanced)))]
+      (if (:done? advanced)
+        {:cursor (:cursor advanced) :blocks blocks}
+        (recur (:cursor advanced) blocks)))))
+
+(deftest selection-cursor-reads-one-verified-block-per-advance-and-resumes
+  (let [{:keys [root leaf get-fn]} (fixture)
+        reads (atom [])
+        get-counted (fn [cid] (swap! reads conj cid) (get-fn cid))
+        selector (graph/path-selector ["child" "score"])
+        cursor (graph/selection-cursor root selector limits)]
+    (is (empty? @reads) "cursor creation performs no storage reads")
+    (let [root-step (graph/advance-cursor cursor get-counted 32)]
+      (is (= root (get-in root-step [:block :cid])))
+      (is (= [root] @reads))
+      (let [leaf-step (graph/advance-cursor (:cursor root-step) get-counted 32)]
+        (is (= leaf (get-in leaf-step [:block :cid])))
+        (is (= [root leaf] @reads))
+        (let [completed (graph/advance-cursor (:cursor leaf-step) get-counted 32)
+              result (graph/cursor-result (:cursor completed))]
+          (is (:done? completed))
+          (is (= 1.1 (-> result :matches first :value)))
+          (is (= {:blocks 2
+                  :bytes (+ (byte-length (get-fn root))
+                            (byte-length (get-fn leaf)))
+                  :matches 1}
+                 (:stats result))))))))
+
+(deftest cursor-work-budget-yields-without-reading-and-preserves-semantics
+  (let [store (atom {})
+        put! (fn [cid bytes] (swap! store assoc cid bytes))
+        leaf (ipld/put-node! put! {"name" "leaf"})
+        middle (ipld/put-node! put! {"name" "middle" "child" (ipld/link leaf)})
+        root (ipld/put-node! put! {"name" "root" "child" (ipld/link middle)})
+        selector {:selector :explore-recursive
+                  :limit {:mode :none}
+                  :sequence {:selector :explore-union
+                             :members [{:selector :matcher}
+                                       {:selector :explore-all
+                                        :next {:selector :explore-recursive-edge}}]}}
+        eager (graph/select-blocks #(get @store %) root selector limits)
+        first-read (graph/advance-cursor
+                    (graph/selection-cursor root selector limits)
+                    #(get @store %) 1)
+        yielded (graph/advance-cursor (:cursor first-read)
+                                      #(get @store %) 1)
+        drained (drain-cursor (:cursor yielded) #(get @store %))]
+    (is (:yielded? yielded))
+    (is (nil? (:block yielded)))
+    (is (= [middle leaf] (mapv :cid (:blocks drained))))
+    (is (= (:matches eager)
+           (:matches (graph/cursor-result (:cursor drained)))))))
