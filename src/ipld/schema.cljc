@@ -4,13 +4,15 @@
   Schema DMT is the authority. `compile-schema` validates its shape and all
   named references; `valid?`/`unify!` then match plain IPLD Data Model values
   without changing their content identity."
-  (:require [clojure.string :as str]
+  (:require [clojure.set :as set]
+            [clojure.string :as str]
             [ipld.data-model :as dm]
             [ipld.link :as link]))
 
 (def prelude
   {"Any" {"any" {}} "Bool" {"bool" {}} "String" {"string" {}}
-   "Bytes" {"bytes" {}} "Int" {"int" {}} "Float" {"float" {}}
+   "Bytes" {"bytes" {"representation" {"bytes" {}}}}
+   "Int" {"int" {}} "Float" {"float" {}}
    "Map" {"map" {"keyType" "String" "valueType" "Any"}}
    "List" {"list" {"valueType" "Any"}} "Link" {"link" {}}})
 
@@ -74,6 +76,292 @@
               :inner-delim inner :entry-delim entry}))
     [inner entry]))
 
+(defn- exact-keys! [value required optional where]
+  (when-not (map? value)
+    (fail! :map-required {:where where :value value}))
+  (let [actual (set (keys value))
+        missing (set/difference required actual)
+        extra (set/difference actual (set/union required optional))]
+    (when (or (seq missing) (seq extra))
+      (fail! :invalid-definition-keys
+             {:where where :missing missing :extra extra})))
+  value)
+
+(defn- nonempty-string! [value where]
+  (when-not (and (string? value) (pos? (count value)))
+    (fail! :nonempty-string-required {:where where :value value})))
+
+(defn- boolean-if-present! [body key where]
+  (when (and (contains? body key) (not (boolean? (get body key))))
+    (fail! :boolean-required {:where where :key key :value (get body key)})))
+
+(declare validate-definition-shape!)
+
+(defn- validate-ref-shape! [ref where]
+  (cond
+    (string? ref) (nonempty-string! ref where)
+    (map? ref) (let [[kind _] (one-entry! ref where)]
+                 (when-not (contains? #{"map" "list" "link"} kind)
+                   (fail! :unsupported-inline-definition {:where where :kind kind}))
+                 (validate-definition-shape! ref where))
+    :else (fail! :invalid-type-reference-shape {:where where :reference ref})))
+
+(defn- validate-union-member-shape! [member where]
+  (cond
+    (string? member) (nonempty-string! member where)
+    (map? member) (let [[kind _] (one-entry! member where)]
+                    (when-not (= "link" kind)
+                      (fail! :unsupported-inline-union-member
+                             {:where where :kind kind}))
+                    (validate-definition-shape! member where))
+    :else (fail! :invalid-union-member {:where where :member member})))
+
+(defn- validate-advanced-or-native! [representation native where]
+  (let [[strategy details] (one-entry! representation where)]
+    (cond
+      (= "advanced" strategy)
+      (nonempty-string! details (conj where "advanced"))
+
+      (= native strategy)
+      (exact-keys! details #{} #{} (conj where native))
+
+      :else
+      (fail! :unsupported-representation
+             {:where where :strategy strategy :allowed #{native "advanced"}}))))
+
+(defn- validate-map-representation-shape! [representation where]
+  (when representation
+    (let [[strategy details] (one-entry! representation where)]
+      (case strategy
+        "listpairs" (exact-keys! details #{} #{} (conj where strategy))
+        "stringpairs" (do
+                        (exact-keys! details #{"innerDelim" "entryDelim"} #{}
+                                     (conj where strategy))
+                        (delimiters! details strategy))
+        "advanced" (nonempty-string! details (conj where strategy))
+        (fail! :unsupported-map-representation
+               {:where where :representation representation})))))
+
+(defn- validate-list-representation-shape! [representation where]
+  (when representation
+    (let [[strategy details] (one-entry! representation where)]
+      (case strategy
+        "advanced" (nonempty-string! details (conj where strategy))
+        (fail! :unsupported-list-representation
+               {:where where :representation representation})))))
+
+(defn- validate-struct-representation-shape! [fields representation where]
+  (let [[strategy details] (one-entry! representation where)]
+    (case strategy
+      "map"
+      (do
+        (exact-keys! details #{} #{"fields"} (conj where strategy))
+        (when-let [repr-fields (get details "fields")]
+          (when-not (map? repr-fields)
+            (fail! :map-required {:where (conj where strategy "fields")}))
+          (doseq [[field config] repr-fields]
+            (when-not (contains? fields field)
+              (fail! :unknown-representation-field {:where where :field field}))
+            (exact-keys! config #{} #{"rename" "implicit"}
+                         (conj where strategy "fields" field))
+            (when (contains? config "rename")
+              (nonempty-string! (get config "rename")
+                                (conj where strategy "fields" field "rename")))
+            (when (contains? config "implicit")
+              (when-not (contains? #{"bool" "string" "bytes" "int" "float"}
+                                   (data-kind (get config "implicit")))
+                (fail! :invalid-implicit-scalar
+                       {:where (conj where strategy "fields" field "implicit")
+                        :value (get config "implicit")}))))))
+
+      "tuple"
+      (exact-keys! details #{} #{"fieldOrder"} (conj where strategy))
+
+      "stringpairs"
+      (do
+        (exact-keys! details #{"innerDelim" "entryDelim"} #{}
+                     (conj where strategy))
+        (delimiters! details strategy))
+
+      "stringjoin"
+      (do
+        (exact-keys! details #{"join"} #{"fieldOrder"} (conj where strategy))
+        (nonempty-string! (get details "join") (conj where strategy "join")))
+
+      "listpairs"
+      (exact-keys! details #{} #{} (conj where strategy))
+
+      (fail! :unsupported-struct-representation
+             {:where where :representation representation}))))
+
+(defn- validate-union-representation-shape! [representation where]
+  (let [[strategy details] (one-entry! representation where)]
+    (case strategy
+      ("keyed" "kinded")
+      (do
+        (when-not (and (map? details)
+                       (every? string? (keys details)))
+          (fail! :invalid-union-table-shape {:where where :strategy strategy}))
+        (doseq [[discriminant member] details]
+          (validate-union-member-shape! member
+                                        (conj where strategy discriminant))))
+
+      ("stringprefix" "bytesprefix")
+      (do
+        (exact-keys! details #{"prefixes"} #{} (conj where strategy))
+        (when-not (and (map? (get details "prefixes"))
+                       (every? string? (keys (get details "prefixes")))
+                       (every? string? (vals (get details "prefixes"))))
+          (fail! :invalid-union-table-shape {:where where :strategy strategy})))
+
+      "envelope"
+      (do
+        (exact-keys! details #{"discriminantKey" "contentKey" "discriminantTable"}
+                     #{} (conj where strategy))
+        (nonempty-string! (get details "discriminantKey")
+                          (conj where strategy "discriminantKey"))
+        (nonempty-string! (get details "contentKey")
+                          (conj where strategy "contentKey"))
+        (when-not (and (map? (get details "discriminantTable"))
+                       (every? string? (keys (get details "discriminantTable"))))
+          (fail! :invalid-union-table-shape {:where where :strategy strategy}))
+        (doseq [[discriminant member] (get details "discriminantTable")]
+          (validate-union-member-shape!
+           member (conj where strategy "discriminantTable" discriminant))))
+
+      "inline"
+      (do
+        (exact-keys! details #{"discriminantKey" "discriminantTable"}
+                     #{} (conj where strategy))
+        (nonempty-string! (get details "discriminantKey")
+                          (conj where strategy "discriminantKey"))
+        (when-not (and (map? (get details "discriminantTable"))
+                       (every? string? (keys (get details "discriminantTable")))
+                       (every? string? (vals (get details "discriminantTable"))))
+          (fail! :invalid-union-table-shape {:where where :strategy strategy})))
+
+      (fail! :unsupported-union-representation
+             {:where where :representation representation}))))
+
+(defn- validate-enum-representation-shape! [members representation where]
+  (let [[strategy mapping] (one-entry! representation where)
+        member-set (set members)]
+    (when-not (map? mapping)
+      (fail! :map-required {:where (conj where strategy)}))
+    (case strategy
+      "string"
+      (do
+        (when-not (and (set/subset? (set (keys mapping)) member-set)
+                       (every? string? (vals mapping)))
+          (fail! :invalid-enum-mapping {:where where :strategy strategy}))
+        (let [wire-values (map #(get mapping % %) members)]
+          (when-not (= (count wire-values) (count (distinct wire-values)))
+            (fail! :duplicate-enum-representation {:where where :strategy strategy}))))
+
+      "int"
+      (do
+        (when-not (and (= member-set (set (keys mapping)))
+                       (every? integer? (vals mapping)))
+          (fail! :invalid-enum-mapping {:where where :strategy strategy}))
+        (when-not (= (count mapping) (count (distinct (vals mapping))))
+          (fail! :duplicate-enum-representation {:where where :strategy strategy})))
+
+      (fail! :unsupported-enum-representation
+             {:where where :representation representation}))))
+
+(defn- validate-definition-shape! [definition where]
+  (let [[kind body] (one-entry! definition where)]
+    (case kind
+      ("bool" "string" "int" "float" "any")
+      (exact-keys! body #{} #{} (conj where kind))
+
+      "bytes"
+      (do
+        (exact-keys! body #{"representation"} #{} (conj where kind))
+        (validate-advanced-or-native! (get body "representation") "bytes"
+                                      (conj where kind "representation")))
+
+      "link"
+      (do
+        (exact-keys! body #{} #{"expectedType"} (conj where kind))
+        (when-let [expected (get body "expectedType")]
+          (nonempty-string! expected (conj where kind "expectedType"))))
+
+      "list"
+      (do
+        (exact-keys! body #{"valueType"} #{"valueNullable" "representation"}
+                     (conj where kind))
+        (validate-ref-shape! (get body "valueType") (conj where kind "valueType"))
+        (boolean-if-present! body "valueNullable" (conj where kind))
+        (validate-list-representation-shape! (get body "representation")
+                                             (conj where kind "representation")))
+
+      "map"
+      (do
+        (exact-keys! body #{"keyType" "valueType"}
+                     #{"valueNullable" "representation"} (conj where kind))
+        (nonempty-string! (get body "keyType") (conj where kind "keyType"))
+        (validate-ref-shape! (get body "valueType") (conj where kind "valueType"))
+        (boolean-if-present! body "valueNullable" (conj where kind))
+        (validate-map-representation-shape! (get body "representation")
+                                            (conj where kind "representation")))
+
+      "struct"
+      (do
+        (exact-keys! body #{"fields" "representation"} #{} (conj where kind))
+        (when-not (and (map? (get body "fields"))
+                       (every? string? (keys (get body "fields"))))
+          (fail! :invalid-struct-fields {:where (conj where kind "fields")}))
+        (doseq [[field spec] (get body "fields")]
+          (exact-keys! spec #{"type"} #{"optional" "nullable"}
+                       (conj where kind "fields" field))
+          (validate-ref-shape! (get spec "type")
+                               (conj where kind "fields" field "type"))
+          (boolean-if-present! spec "optional" (conj where kind "fields" field))
+          (boolean-if-present! spec "nullable" (conj where kind "fields" field)))
+        (validate-struct-representation-shape!
+         (get body "fields") (get body "representation")
+         (conj where kind "representation")))
+
+      "union"
+      (do
+        (exact-keys! body #{"members" "representation"} #{} (conj where kind))
+        (when-not (and (sequential? (get body "members"))
+                       (seq (get body "members")))
+          (fail! :invalid-union-members {:where (conj where kind "members")}))
+        (doseq [[index member] (map-indexed vector (get body "members"))]
+          (validate-union-member-shape! member
+                                        (conj where kind "members" index)))
+        (validate-union-representation-shape! (get body "representation")
+                                              (conj where kind "representation")))
+
+      "enum"
+      (do
+        (exact-keys! body #{"members" "representation"} #{} (conj where kind))
+        (let [members (get body "members")]
+          (when-not (and (sequential? members) (seq members)
+                         (every? string? members)
+                         (= (count members) (count (distinct members))))
+            (fail! :invalid-enum-members {:where (conj where kind "members")}))
+          (validate-enum-representation-shape! members (get body "representation")
+                                               (conj where kind "representation"))))
+
+      "unit"
+      (do
+        (exact-keys! body #{"representation"} #{} (conj where kind))
+        (when-not (contains? #{"null" "true" "false" "emptymap"}
+                             (get body "representation"))
+          (fail! :invalid-unit-representation
+                 {:where (conj where kind "representation")
+                  :value (get body "representation")})))
+
+      "copy"
+      (do
+        (exact-keys! body #{"fromType"} #{} (conj where kind))
+        (nonempty-string! (get body "fromType") (conj where kind "fromType")))
+
+      (fail! :unsupported-type-kind {:where where :kind kind}))))
+
 (defn- validate-struct-representation! [name body]
   (let [representation (get body "representation" {"map" {}})
         [strategy details] (one-entry! representation name)
@@ -108,7 +396,7 @@
              {:type-name name :representation representation}))))
 
 (def union-kinds
-  #{"null" "bool" "int" "float" "string" "bytes" "link" "list" "map"})
+  #{"bool" "int" "float" "string" "bytes" "link" "list" "map"})
 
 (defn- ambiguous-prefixes? [prefixes starts-with?]
   (boolean
@@ -229,10 +517,31 @@
                      {:type-name name :member member :expected "bytes"})))
 
           (contains? representation "inline")
-          (doseq [member (vals (get-in representation ["inline" "discriminantTable"]))]
-            (when-not (= "map" (representation-kind types member #{}))
-              (fail! :union-member-kind-mismatch
-                     {:type-name name :member member :expected "map"}))))))))
+          (let [details (get representation "inline")
+                discriminant-key (get details "discriminantKey")]
+            (doseq [member (vals (get details "discriminantTable"))]
+              (loop [ref member seen #{}]
+                (when (contains? seen ref)
+                  (fail! :copy-cycle {:type-name name :cycle-at ref}))
+                (let [member-definition (get types ref)
+                      [member-kind member-body]
+                      (one-entry! member-definition :inline-union-member)]
+                  (if (= member-kind "copy")
+                    (recur (get member-body "fromType") (conj seen ref))
+                    (do
+                      (when-not (and (= member-kind "struct")
+                                     (= "map" (representation-kind types ref #{})))
+                        (fail! :inline-union-member-must-be-map-struct
+                               {:type-name name :member member}))
+                      (let [repr-fields (get-in member-body
+                                                ["representation" "map" "fields"] {})
+                            wire-names (map (fn [[field _]]
+                                              (get-in repr-fields [field "rename"] field))
+                                            (get member-body "fields"))]
+                        (when (some #{discriminant-key} wire-names)
+                          (fail! :inline-union-discriminant-collision
+                                 {:type-name name :member member
+                                  :discriminant-key discriminant-key}))))))))))))))
 
 (defn- validate-string-representations! [name definition types]
   (let [[kind body] (one-entry! definition name)
@@ -294,6 +603,23 @@
   #{"bool" "string" "bytes" "int" "float" "any" "map" "list"
     "link" "struct" "union" "enum" "unit" "copy"})
 
+(defn- validate-copy-cycles! [types]
+  (doseq [start (keys types)]
+    (loop [name start seen #{}]
+      (when (contains? seen name)
+        (fail! :copy-cycle {:type-name start :cycle-at name}))
+      (let [definition (get types name)
+            [kind body] (one-entry! definition name)]
+        (when (= kind "copy")
+          (recur (get body "fromType") (conj seen name)))))))
+
+(defn- validate-map-key-kind! [name definition types]
+  (let [[kind body] (one-entry! definition name)]
+    (when (and (= kind "map")
+               (not= "string" (representation-kind types (get body "keyType") #{})))
+      (fail! :map-key-representation-must-be-string
+             {:type-name name :key-type (get body "keyType")}))))
+
 (defn compile-schema
   "Validate normalized DMT and return an immutable compiled schema map."
   [dmt]
@@ -303,24 +629,31 @@
         advanced (get dmt "advanced" {})]
     (when-not (and (map? types) (every? string? (keys types)))
       (fail! :types-map-required {}))
-    (when-not (and (map? advanced) (every? string? (keys advanced)))
+    (when-not (and (map? advanced) (every? string? (keys advanced))
+                   (every? #(= {} %) (vals advanced)))
       (fail! :advanced-map-required {}))
+    (doseq [name (keys advanced)]
+      (when-not (re-matches #"[A-Z][A-Za-z0-9_]*" name)
+        (fail! :invalid-advanced-name {:name name})))
     (doseq [[name definition] types]
       (when-not (re-matches #"[A-Z][A-Za-z0-9_]*" name)
         (fail! :invalid-type-name {:name name}))
       (let [[kind _] (one-entry! definition name)]
         (when-not (contains? supported-kinds kind)
-          (fail! :unsupported-type-kind {:name name :kind kind}))))
+          (fail! :unsupported-type-kind {:name name :kind kind})))
+      (validate-definition-shape! definition [name]))
     (let [all-types (merge prelude types)
           compiled {:dmt dmt :types all-types :advanced (set (keys advanced))}]
-      (doseq [[name definition] types]
-        (validate-representation! name definition)
-        (validate-string-representations! name definition all-types)
-        (validate-union-member-kinds! name definition all-types))
       (doseq [[name definition] types
               reference (type-refs definition)]
         (when-not (contains? all-types reference)
           (fail! :unknown-type-reference {:type-name name :reference reference})))
+      (validate-copy-cycles! all-types)
+      (doseq [[name definition] types]
+        (validate-representation! name definition)
+        (validate-string-representations! name definition all-types)
+        (validate-union-member-kinds! name definition all-types)
+        (validate-map-key-kind! name definition all-types))
       (doseq [[name definition] types
               adl (adl-refs definition)]
         (when-not (contains? advanced adl)
@@ -361,13 +694,120 @@
              {:adl name :path path}))
     capability))
 
-(defn- invoke-adl! [capability name operation value path]
+(defn- utf8-length [text]
+  #?(:clj (alength (.getBytes ^String text "UTF-8"))
+     :cljs (.-length (.encode (js/TextEncoder.) text))))
+
+(defn- measure-value! [runtime value path]
+  (let [nodes (atom 0)
+        bytes (atom 0)
+        max-depth (:max-output-depth runtime)
+        max-nodes (:max-output-nodes runtime)
+        max-bytes (:max-output-bytes runtime)]
+    (letfn [(consume-node! [depth at]
+              (when (> depth max-depth)
+                (fail! :adl-output-depth-exceeded {:path at :max-depth max-depth}))
+              (when (> (swap! nodes inc) max-nodes)
+                (fail! :adl-output-nodes-exceeded {:path at :max-nodes max-nodes})))
+            (consume-bytes! [n at]
+              (when (> (swap! bytes + n) max-bytes)
+                (fail! :adl-output-bytes-exceeded {:path at :max-bytes max-bytes})))
+            (walk! [node depth at]
+              (consume-node! depth at)
+              (case (dm/kind node)
+                :map (doseq [[key item] (dm/entries node)]
+                       (when-not (string? key)
+                         (fail! :adl-output-map-key-not-string {:path at :key key}))
+                       (walk! key (inc depth) (conj at key :key))
+                       (walk! item (inc depth) (conj at key)))
+                :list (doseq [[i item] (dm/entries node)]
+                        (walk! item (inc depth) (conj at i)))
+                :string (consume-bytes! (utf8-length node) at)
+                :bytes (consume-bytes! (count (byte-vector node)) at)
+                :link (consume-bytes! (utf8-length (link/link-cid node)) at)
+                (:int :float) (consume-bytes! 8 at)
+                :bool (consume-bytes! 1 at)
+                :null nil))]
+      (walk! value 0 path)
+      {:nodes @nodes :bytes @bytes})))
+
+(defn- data-equal? [a b]
   (try
-    (capability value)
+    (let [kind-a (dm/kind a)
+          kind-b (dm/kind b)]
+      (and (= kind-a kind-b)
+           (case kind-a
+             :bytes (= (byte-vector a) (byte-vector b))
+             :link (= (link/link-cid a) (link/link-cid b))
+             :list (let [xs (mapv second (dm/entries a))
+                         ys (mapv second (dm/entries b))]
+                     (and (= (count xs) (count ys))
+                          (every? true? (map data-equal? xs ys))))
+             :map (let [xs (into {} (dm/entries a))
+                        ys (into {} (dm/entries b))]
+                    (and (= (set (keys xs)) (set (keys ys)))
+                         (every? (fn [key] (data-equal? (get xs key) (get ys key)))
+                                 (keys xs))))
+             (= a b))))
+    (catch #?(:clj Exception :cljs :default) _ false)))
+
+(defn- adl-runtime [limits]
+  (let [strict? (boolean (seq (:adl-capabilities limits)))]
+    {:strict? strict?
+     :max-output-depth (positive-limit! limits :max-depth)
+     :max-fuel (if strict? (positive-limit! limits :max-adl-fuel) 9007199254740991)
+     :max-output-nodes (if strict? (positive-limit! limits :max-adl-output-nodes)
+                           9007199254740991)
+     :max-output-bytes (if strict? (positive-limit! limits :max-adl-output-bytes)
+                           9007199254740991)
+     :check-determinism? (true? (:check-adl-determinism? limits))
+     :fuel-used (atom 0)
+     :receipts (atom [])}))
+
+(defn- charge-fuel! [runtime capability operation path]
+  (let [cost (get-in capability [:fuel-costs operation]
+                     (get capability :fuel-cost 1))]
+    (when-not (and (integer? cost) (pos? cost))
+      (fail! :invalid-adl-fuel-cost {:operation operation :path path :cost cost}))
+    (let [used (swap! (:fuel-used runtime) + cost)]
+      (when (> used (:max-fuel runtime))
+        (fail! :adl-fuel-exceeded {:operation operation :path path
+                                   :max-adl-fuel (:max-fuel runtime)}))
+      cost)))
+
+(defn- invoke-once! [function name operation value path]
+  (try
+    (function value)
     (catch #?(:clj Exception :cljs :default) error
       (fail! :adl-capability-failed
              {:adl name :operation operation :path path
               :message #?(:clj (.getMessage error) :cljs (.-message error))}))))
+
+(defn- invoke-adl! [state name operation value path]
+  (let [capabilities (:adl-capabilities state)
+        capability-map (get capabilities name)
+        function (adl-capability! capabilities name operation path)
+        runtime (:adl-runtime state)
+        deterministic-check? (and (:strict? runtime)
+                                  (:check-determinism? runtime)
+                                  (contains? #{:decode :encode} operation))
+        input-metrics (when (:strict? runtime) (measure-value! runtime value path))
+        first-cost (charge-fuel! runtime capability-map operation path)
+        output (invoke-once! function name operation value path)
+        second-output (when deterministic-check?
+                        (charge-fuel! runtime capability-map operation path)
+                        (invoke-once! function name operation value path))]
+    (when (and deterministic-check? (not (data-equal? output second-output)))
+      (fail! :adl-nondeterministic {:adl name :operation operation :path path}))
+    (when (:strict? runtime)
+      (let [output-metrics (measure-value! runtime output path)
+            receipt {:adl name :operation operation
+                     :attempts (if deterministic-check? 2 1)
+                     :fuel (* first-cost (if deterministic-check? 2 1))
+                     :input input-metrics :output output-metrics
+                     :deterministic? (when deterministic-check? true)}]
+        (swap! (:receipts runtime) conj receipt)))
+    output))
 
 (declare consume!)
 
@@ -387,10 +827,8 @@
 
 (defn- validate-adl-representation! [state name value depth path]
   (consume-data-children! state value depth path)
-  (let [validator (adl-capability! (:adl-capabilities state) name
-                                   :validate-representation path)]
-    (when-not (invoke-adl! validator name :validate-representation value path)
-      (fail! :adl-rejected {:adl name :path path}))))
+  (when-not (invoke-adl! state name :validate-representation value path)
+    (fail! :adl-rejected {:adl name :path path})))
 
 (defn- consume! [state depth path]
   (when (> depth (:max-depth state))
@@ -745,27 +1183,31 @@
   (let [state {:max-depth (positive-limit! limits :max-depth)
                :max-nodes (positive-limit! limits :max-nodes)
                :nodes (atom 0)
-               :adl-capabilities (adl-capabilities limits)}]
+               :adl-capabilities (adl-capabilities limits)
+               :adl-runtime (adl-runtime limits)}]
     (unify-ref! compiled state type-name value 0 [])
-    {:type type-name :nodes @(:nodes state) :value value}))
+    (cond-> {:type type-name :nodes @(:nodes state) :value value}
+      (get-in state [:adl-runtime :strict?])
+      (assoc :adl-fuel-used @(get-in state [:adl-runtime :fuel-used])
+             :adl-receipts @(get-in state [:adl-runtime :receipts])))))
 
 (declare decode-ref encode-ref)
 
-(defn- decode-nullable [compiled capabilities ref nullable? value path]
+(defn- decode-nullable [compiled state ref nullable? value path]
   (if (nil? value)
     (if nullable? nil (fail! :unexpected-null {:path path}))
-    (decode-ref compiled capabilities ref value path)))
+    (decode-ref compiled state ref value path)))
 
-(defn- decode-adl [capabilities name value path]
-  (let [decoder (adl-capability! capabilities name :decode path)
-        logical (invoke-adl! decoder name :decode value path)
+(defn- decode-adl [state name value path]
+  (let [capabilities (:adl-capabilities state)
+        logical (invoke-adl! state name :decode value path)
         logical-validator (get-in capabilities [name :validate-logical])]
     (when (and logical-validator
-               (not (invoke-adl! logical-validator name :validate-logical logical path)))
+               (not (invoke-adl! state name :validate-logical logical path)))
       (fail! :adl-logical-rejected {:adl name :path path}))
     logical))
 
-(defn- decode-map [compiled capabilities body value path]
+(defn- decode-map [compiled state body value path]
   (let [representation (get body "representation")
         pairs (cond
                 (or (nil? representation) (contains? representation "map")) value
@@ -777,21 +1219,21 @@
                 :else (fail! :projection-not-supported
                              {:path path :representation representation}))]
     (if (= ::advanced pairs)
-      (decode-adl capabilities (get representation "advanced") value path)
+      (decode-adl state (get representation "advanced") value path)
       (into {}
             (map-indexed
              (fn [i [k v]]
                [(if (contains? representation "stringpairs")
                   (text-value! compiled (get body "keyType") k (conj path i 0))
-                  (decode-ref compiled capabilities (get body "keyType") k (conj path i 0)))
+                  (decode-ref compiled state (get body "keyType") k (conj path i 0)))
                 (if (contains? representation "stringpairs")
                   (text-value! compiled (get body "valueType") v (conj path i 1))
-                  (decode-nullable compiled capabilities (get body "valueType")
+                  (decode-nullable compiled state (get body "valueType")
                                    (true? (get body "valueNullable")) v
                                    (conj path i 1)))])
              pairs)))))
 
-(defn- decode-struct [compiled capabilities body value path]
+(defn- decode-struct [compiled state body value path]
   (let [representation (get body "representation" {"map" {}})
         fields (get body "fields")]
     (cond
@@ -803,7 +1245,7 @@
                             configured (get-in details ["fields" field] {})]
                         (cond
                           (contains? value wire)
-                          [field (decode-nullable compiled capabilities (get spec "type")
+                          [field (decode-nullable compiled state (get spec "type")
                                                   (true? (get spec "nullable"))
                                                   (get value wire) (conj path wire))]
                           (contains? configured "implicit")
@@ -817,7 +1259,7 @@
       (let [order (struct-field-order! body (get representation "tuple") "tuple")]
         (into {} (map (fn [field item]
                         (let [spec (get fields field)]
-                          [field (decode-nullable compiled capabilities (get spec "type")
+                          [field (decode-nullable compiled state (get spec "type")
                                                   (true? (get spec "nullable")) item
                                                   (conj path field))]))
                       order value)))
@@ -833,7 +1275,7 @@
       (into {}
             (map (fn [[field item]]
                    (let [spec (get fields field)]
-                     [field (decode-nullable compiled capabilities (get spec "type")
+                     [field (decode-nullable compiled state (get spec "type")
                                              (true? (get spec "nullable")) item
                                              (conj path field))])))
             value)
@@ -858,7 +1300,7 @@
               members)
         (fail! :invalid-enum-value {:path path :value value :representation strategy}))))
 
-(defn- decode-union [compiled capabilities body value path]
+(defn- decode-union [compiled state body value path]
   (let [representation (get body "representation")
         [member content content-path]
         (cond
@@ -900,26 +1342,26 @@
           :else (fail! :projection-not-supported
                        {:path path :representation representation}))]
     {:member member
-     :value (decode-ref compiled capabilities member content content-path)}))
+     :value (decode-ref compiled state member content content-path)}))
 
-(defn- decode-ref [compiled capabilities ref value path]
+(defn- decode-ref [compiled state ref value path]
   (let [definition (if (string? ref) (get-in compiled [:types ref]) ref)
         [kind body] (one-entry! definition path)]
     (case kind
-      "copy" (decode-ref compiled capabilities (get body "fromType") value path)
+      "copy" (decode-ref compiled state (get body "fromType") value path)
       "list" (if-let [advanced (get-in body ["representation" "advanced"])]
-               (decode-adl capabilities advanced value path)
+               (decode-adl state advanced value path)
                (mapv (fn [i item]
-                       (decode-nullable compiled capabilities (get body "valueType")
+                       (decode-nullable compiled state (get body "valueType")
                                         (true? (get body "valueNullable")) item
                                         (conj path i)))
                      (range) value))
-      "map" (decode-map compiled capabilities body value path)
-      "struct" (decode-struct compiled capabilities body value path)
-      "union" (decode-union compiled capabilities body value path)
+      "map" (decode-map compiled state body value path)
+      "struct" (decode-struct compiled state body value path)
+      "union" (decode-union compiled state body value path)
       "enum" (decode-enum body value path)
       "bytes" (if-let [advanced (get-in body ["representation" "advanced"])]
-                (decode-adl capabilities advanced value path)
+                (decode-adl state advanced value path)
                 value)
       value)))
 
@@ -927,10 +1369,18 @@
   "Validate a representation value, then return its logical typed value.
   Struct field names and typed implicit values are restored."
   [compiled type-name value limits]
-  (let [result (unify! compiled type-name value limits)
-        capabilities (adl-capabilities limits)]
-    (assoc result :logical-value
-           (decode-ref compiled capabilities type-name value []))))
+  (let [state {:max-depth (positive-limit! limits :max-depth)
+               :max-nodes (positive-limit! limits :max-nodes)
+               :nodes (atom 0)
+               :adl-capabilities (adl-capabilities limits)
+               :adl-runtime (adl-runtime limits)}]
+    (unify-ref! compiled state type-name value 0 [])
+    (let [logical (decode-ref compiled state type-name value [])]
+      (cond-> {:type type-name :nodes @(:nodes state) :value value
+               :logical-value logical}
+        (get-in state [:adl-runtime :strict?])
+        (assoc :adl-fuel-used @(get-in state [:adl-runtime :fuel-used])
+               :adl-receipts @(get-in state [:adl-runtime :receipts]))))))
 
 (defn- encode-text! [compiled ref value path]
   (let [definition (if (string? ref) (get-in compiled [:types ref]) ref)
@@ -967,10 +1417,9 @@
   (let [capabilities (:adl-capabilities state)
         logical-validator (get-in capabilities [name :validate-logical])]
     (when (and logical-validator
-               (not (invoke-adl! logical-validator name :validate-logical logical path)))
+               (not (invoke-adl! state name :validate-logical logical path)))
       (fail! :adl-logical-rejected {:adl name :path path}))
-    (invoke-adl! (adl-capability! capabilities name :encode path)
-                 name :encode logical path)))
+    (invoke-adl! state name :encode logical path)))
 
 (defn- logical-fields! [body value path]
   (when-not (and (map? value) (every? string? (keys value)))
@@ -1195,10 +1644,17 @@
   (let [state {:max-depth (positive-limit! limits :max-depth)
                :max-nodes (positive-limit! limits :max-nodes)
                :nodes (atom 0)
-               :adl-capabilities (adl-capabilities limits)}
+               :adl-capabilities (adl-capabilities limits)
+               :adl-runtime (adl-runtime limits)}
         value (encode-ref compiled state type-name logical-value 0 [])
-        checked (unify! compiled type-name value limits)]
-    (assoc checked :logical-value logical-value)))
+        encode-nodes @(:nodes state)]
+    (reset! (:nodes state) 0)
+    (unify-ref! compiled state type-name value 0 [])
+    (cond-> {:type type-name :nodes (max encode-nodes @(:nodes state))
+             :value value :logical-value logical-value}
+      (get-in state [:adl-runtime :strict?])
+      (assoc :adl-fuel-used @(get-in state [:adl-runtime :fuel-used])
+             :adl-receipts @(get-in state [:adl-runtime :receipts])))))
 
 (declare legacy-valid?)
 

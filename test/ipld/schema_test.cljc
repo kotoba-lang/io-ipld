@@ -144,7 +144,9 @@ type Defaults struct {
                         "representation" "map" "fields" "fooField" "rename"])))
     (is (= {"unit" {"representation" "null"}}
            (get-in dmt ["types" "ExampleOfUnit"])))
-    (is (= {"any" {}} (get-in dmt ["types" "ExampleOfAny"])))))
+    (is (= {"any" {}} (get-in dmt ["types" "ExampleOfAny"])))
+    (is (= {"bytes" {"representation" {"bytes" {}}}}
+           (get-in (dsl/parse "type Payload bytes") ["types" "Payload"])))))
 
 (deftest dmt-compiles-and-unifies-representation-values
   (let [compiled (schema/compile-schema (dsl/parse application-schema))]
@@ -333,7 +335,11 @@ type Defaults struct {
                 {:validate-representation string?
                  :decode (fn [representation] {"label" representation})
                  :encode (fn [logical] (get logical "label"))
-                 :validate-logical map?}})]
+                 :validate-logical map?}}
+               :max-adl-fuel 32
+               :max-adl-output-nodes 64
+               :max-adl-output-bytes 1024
+               :check-adl-determinism? true)]
     (is (schema/valid? compiled "Secret" ["sealed" "Ada"] adl-limits))
     (is (not (schema/valid? compiled "Secret" ["sealed" "Ada"]
                             (assoc adl-limits :max-nodes 2))))
@@ -371,6 +377,56 @@ type Defaults struct {
                   (assoc-in adl-limits [:adl-capabilities "Ciphertext" :encode]
                             (constantly 42)))))))
 
+(deftest advanced-capability-budget-and-determinism-receipts
+  (let [compiled (schema/compile-schema (dsl/parse application-schema))
+        base-capability {:validate-representation vector?
+                         :decode second
+                         :encode (fn [logical] ["sealed" logical])
+                         :validate-logical string?
+                         :fuel-costs {:validate-representation 2
+                                      :decode 3 :encode 5 :validate-logical 2}}
+        metered (assoc limits
+                       :adl-capabilities {"Ciphertext" base-capability}
+                       :max-adl-fuel 32
+                       :max-adl-output-nodes 16
+                       :max-adl-output-bytes 128
+                       :check-adl-determinism? true)
+        decoded (schema/representation->logical! compiled "Secret"
+                                                 ["sealed" "Ada"] metered)
+        encoded (schema/logical->representation! compiled "Secret" "Ada" metered)]
+    (is (= "Ada" (:logical-value decoded)))
+    (is (= 10 (:adl-fuel-used decoded)))
+    (is (= [:validate-representation :decode :validate-logical]
+           (mapv :operation (:adl-receipts decoded))))
+    (is (= [1 2 1] (mapv :attempts (:adl-receipts decoded))))
+    (is (= true (:deterministic? (second (:adl-receipts decoded)))))
+    (is (= ["sealed" "Ada"] (:value encoded)))
+    (is (= 14 (:adl-fuel-used encoded)))
+    (is (= [:validate-logical :encode :validate-representation]
+           (mapv :operation (:adl-receipts encoded))))
+    (is (every? #(and (pos? (get-in % [:input :nodes]))
+                      (pos? (get-in % [:output :nodes])))
+                (:adl-receipts decoded)))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                 (schema/representation->logical! compiled "Secret"
+                                                  ["sealed" "Ada"]
+                                                  (assoc metered :max-adl-fuel 4))))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                 (schema/representation->logical!
+                  compiled "Secret" ["sealed" "Ada"]
+                  (-> metered
+                      (assoc :max-adl-output-nodes 3)
+                      (assoc-in [:adl-capabilities "Ciphertext" :decode]
+                                (constantly ["a" "b" "c" "d"]))
+                      (assoc-in [:adl-capabilities "Ciphertext" :validate-logical]
+                                vector?)))))
+    (let [counter (atom 0)]
+      (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                   (schema/representation->logical!
+                    compiled "Secret" ["sealed" "Ada"]
+                    (assoc-in metered [:adl-capabilities "Ciphertext" :decode]
+                              (fn [_] (swap! counter inc)))))))))
+
 (deftest invalid-union-representation-tables-fail-at-compile-time
   (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
                (schema/compile-schema
@@ -384,3 +440,67 @@ type Defaults struct {
                (schema/compile-schema
                 (dsl/parse
                  "type Bad union { | String \"a\" | String \"b\" } representation keyed")))))
+
+(deftest schema-schema-dmt-shapes-fail-closed
+  (doseq [dmt
+          [{"types" {"Bad" {"string" {"extra" true}}}}
+           {"types" {"Bad" {"bytes" {}}}}
+           {"types" {} "advanced" {"Packed" {"parameters" {}}}}
+           {"types" {} "advanced" {"packed" {}}}
+           {"types" {"Bad" {"list" {"valueType" "String"
+                                            "representation" {"list" {}}}}}}
+           {"types" {"Bad" {"map" {"keyType" "String"
+                                           "valueType" "String"
+                                           "representation" {"map" {}}}}}}
+           {"types" {"Bad" {"list" {"valueType" {"string" {}}}}}}
+           {"types" {"Bad" {"map" {"keyType" "Int"
+                                           "valueType" "String"}}}}
+           {"types" {"Bad" {"enum" {"members" ["A" "B"]
+                                            "representation" {"int" {"A" 1}}}}}}
+           {"types" {"Bad" {"enum" {"members" ["A" "B"]
+                                            "representation" {"int" {"A" 1 "B" 1}}}}}}
+           {"types" {"Bad" {"struct"
+                                     {"fields" {"enabled" {"type" "Bool"}}
+                                      "representation"
+                                      {"map" {"fields" {"enabled" {"implicit" nil}}}}}}}}
+           {"types" {"A" {"copy" {"fromType" "B"}}
+                     "B" {"copy" {"fromType" "A"}}}}]]
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                 (schema/compile-schema dmt)))))
+
+(deftest schema-schema-allows-inline-link-union-members
+  (let [compiled (schema/compile-schema
+                  (dsl/parse
+                   "type MaybeLink union { | &Any link | String string } representation kinded"))]
+    (is (= {"link" {}}
+           (first (get-in compiled [:dmt "types" "MaybeLink" "union" "members"]))))))
+
+(deftest generated-representation-roundtrip-properties
+  (let [application (schema/compile-schema (dsl/parse application-schema))
+        representations (schema/compile-schema (dsl/parse representation-schema))]
+    (doseq [n (range -64 65)]
+      (let [logical {:member "Int" :value n}
+            wire (:value (schema/logical->representation!
+                          application "Scalar" logical limits))]
+        (is (= n wire))
+        (is (= logical
+               (:logical-value
+                (schema/representation->logical!
+                 application "Scalar" wire limits))))))
+    (doseq [suffix (range 32)]
+      (let [logical {:member "Username" :value (str "u" suffix)}
+            wire (:value (schema/logical->representation!
+                          application "Authorization" logical limits))]
+        (is (= (str "user:u" suffix) wire))
+        (is (= logical
+               (:logical-value
+                (schema/representation->logical!
+                 application "Authorization" wire limits))))))
+    (doseq [n (range 1 17)]
+      (let [logical (into {} (map (fn [i] [(str "k" i) i]) (range n)))
+            wire (:value (schema/logical->representation!
+                          representations "StringMap" logical limits))]
+        (is (= logical
+               (:logical-value
+                (schema/representation->logical!
+                 representations "StringMap" wire limits))))))))
