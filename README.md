@@ -51,7 +51,7 @@ the whole stack:
 | `ipld.data-model` | the nine Data Model kinds, lossless validation, and the universal `INode` interface used by native values and ADLs |
 | `ipld.core` | strict DAG-CBOR representation plus CID-verified block reads |
 | `ipld.schema-dsl` | the user-facing IPLD Schema syntax compiled into normalized Schema DMT |
-| `ipld.schema` | DMT reference validation and bounded representation unification, including ADL validator capabilities |
+| `ipld.schema` | Schema-Schema DMT shape/reference validation and bounded representation unification, including metered ADL capabilities |
 | `ipld.selector` | non-conditional IPLD selectors over native values or ADL Nodes, including bounded recursion, transparent Link resolution, and strict Data Model/DAG-CBOR codecs |
 | `ipld.graph` | bounded selector execution with root-first, deduplicated proof blocks suitable for CAR/GraphSync adapters |
 
@@ -60,8 +60,12 @@ prelude scalar types, named copies, typed/untyped links, inline maps/lists,
 nullable values, optional fields, map/tuple structs with field rename or
 implicit annotations, all six union representations (keyed, kinded, envelope,
 inline, stringprefix, and bytesprefix), string/int enums, unit/any types, and
-declared advanced representations. `ipld.schema/compile-schema` validates
-all named references; `unify!` matches representation values under mandatory
+declared advanced representations. Bare `bytes` definitions normalize to the
+Schema-Schema DMT's explicit `{"representation" {"bytes" {}}}` form.
+`ipld.schema/compile-schema` validates exact required/optional keys, nested
+definition shapes, representation tables, enum mappings, string-kind map keys,
+copy cycles, advanced declarations, and every named reference before returning
+a compiled schema. `unify!` matches representation values under mandatory
 depth/node budgets and requires a caller-owned validator capability before an
 advanced representation can execute. Tuple and stringjoin `fieldOrder`, map
 and struct stringpairs, struct stringjoin/listpairs, and typed scalar implicit
@@ -74,8 +78,16 @@ fail closed on duplicate keys, non-canonical numeric text, and unescaped
 delimiter collisions. Advanced map/list/bytes representations execute only
 through caller-owned `:adl-capabilities` containing explicit representation
 validation and `:decode`/`:encode` functions (with optional logical
-validation); the legacy `:adl-validators` validation-only API remains
-compatible.
+validation). Capability execution additionally requires positive
+`:max-adl-fuel`, `:max-adl-output-nodes`, and `:max-adl-output-bytes` limits.
+Each operation is charged its declared `:fuel-cost` or operation-specific
+`:fuel-costs`, input/output Data Model size is measured, and projection results
+contain `:adl-fuel-used` plus ordered `:adl-receipts`. Setting
+`:check-adl-determinism? true` actively runs encode/decode twice and rejects
+different Data Model outputs. Fuel is a caller-declared boundary cost: opaque
+Clojure functions are not instruction-preempted, so untrusted transforms still
+belong in a separately metered Wasm/process backend. The legacy
+`:adl-validators` validation-only API remains compatible.
 
 `ipld.graph/select-blocks` is intentionally transport-neutral. It requires
 explicit block, byte, path-depth, and match limits; rehashes every fetched

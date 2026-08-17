@@ -115,7 +115,11 @@
 
       (= :id (:kind token))
       (let [name (:value (take-token! p))]
-        (if (contains? scalar-kinds name) {name {}} name))
+        (if (contains? scalar-kinds name)
+          (if (= "bytes" name)
+            {"bytes" {"representation" {"bytes" {}}}}
+            {name {}})
+          name))
 
       :else (fail! :expected-type-reference {:actual token}))))
 
