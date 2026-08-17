@@ -2,7 +2,9 @@
   (:require #?(:clj [clojure.test :refer [deftest is]]
                :cljs [cljs.test :refer [deftest is] :include-macros true])
             [ipld.schema :as schema]
-            [ipld.schema-dsl :as dsl]))
+            [ipld.schema-dsl :as dsl]
+            [ipld.core :as core]
+            [multiformats.core :as mf]))
 
 (def official-example
   "type ExampleWithNullable {String : nullable &Any}
@@ -74,6 +76,10 @@ type CompressedLabels {String:String} representation advanced PackedMap
 type Secret bytes representation advanced Ciphertext")
 
 (def limits {:max-depth 32 :max-nodes 256})
+
+(def empty-wasm-module
+  #?(:clj (byte-array [0 97 115 109 1 0 0 0])
+     :cljs (js/Uint8Array.from #js [0 97 115 109 1 0 0 0])))
 
 (def representation-schema
   "type Reordered struct {
@@ -426,6 +432,87 @@ type Defaults struct {
                     compiled "Secret" ["sealed" "Ada"]
                     (assoc-in metered [:adl-capabilities "Ciphertext" :decode]
                               (fn [_] (swap! counter inc)))))))))
+
+(deftest wasm-adl-boundary-verifies-module-resource-and-content-evidence
+  (let [compiled (schema/compile-schema (dsl/parse application-schema))
+        requests (atom [])
+        module-cid (mf/cidv1-raw empty-wasm-module)
+        fuel-cost {:validate-representation 2 :decode 3
+                   :encode 5 :validate-logical 2}
+        invoke (fn [{:keys [operation input-bytes module-cid engine-id] :as request}]
+                 (swap! requests conj request)
+                 (let [input (core/decode input-bytes)
+                       output (case operation
+                                :validate-representation
+                                (and (vector? input) (= "sealed" (first input)))
+                                :decode (second input)
+                                :encode ["sealed" input]
+                                :validate-logical (string? input))]
+                   {:status :ok :engine-id engine-id :module-cid module-cid
+                    :output-bytes (core/encode output)
+                    :fuel-used (get fuel-cost operation)
+                    :memory-pages 1}))
+        capability (schema/wasm-adl-capability
+                    {:module-bytes empty-wasm-module :module-cid module-cid
+                     :engine-id "test-metered-wasm/v1"
+                     :operations (set (keys fuel-cost)) :invoke invoke})
+        metered (assoc limits
+                       :adl-capabilities {"Ciphertext" capability}
+                       :max-adl-fuel 32
+                       :max-adl-output-nodes 16
+                       :max-adl-output-bytes 128
+                       :max-adl-module-bytes 64
+                       :max-adl-memory-pages 2
+                       :check-adl-determinism? true)
+        decoded (schema/representation->logical! compiled "Secret"
+                                                 ["sealed" "Ada"] metered)
+        encoded (schema/logical->representation! compiled "Secret" "Ada" metered)]
+    (is (= "Ada" (:logical-value decoded)))
+    (is (= ["sealed" "Ada"] (:value encoded)))
+    (is (= 10 (:adl-fuel-used decoded)))
+    (is (= 14 (:adl-fuel-used encoded)))
+    (is (every? #(= :wasm (:execution %))
+                (concat (:adl-receipts decoded) (:adl-receipts encoded))))
+    (is (every? #(= module-cid (:module-cid %))
+                (concat (:adl-receipts decoded) (:adl-receipts encoded))))
+    (is (every? #(= "test-metered-wasm/v1" (:engine-id %))
+                (concat (:adl-receipts decoded) (:adl-receipts encoded))))
+    (is (every? #(and (string? (:input-cid %)) (string? (:output-cid %))
+                      (= 1 (:memory-pages %)))
+                (concat (:adl-receipts decoded) (:adl-receipts encoded))))
+    (is (= [32 30 27 24 32 30 25 20]
+           (mapv :fuel-limit @requests)))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                 (schema/representation->logical!
+                  compiled "Secret" ["sealed" "Ada"]
+                  (assoc-in metered [:adl-capabilities "Ciphertext" :module-cid]
+                            "bafkreibad"))))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                 (schema/representation->logical!
+                  compiled "Secret" ["sealed" "Ada"]
+                  (assoc metered :max-adl-fuel 4))))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                 (schema/representation->logical!
+                  compiled "Secret" ["sealed" "Ada"]
+                  (assoc-in metered [:adl-capabilities "Ciphertext" :invoke]
+                            (fn [request]
+                              (assoc (invoke request) :memory-pages 3))))))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                 (schema/representation->logical!
+                  compiled "Secret" ["sealed" "Ada"]
+                  (assoc-in metered [:adl-capabilities "Ciphertext" :invoke]
+                            (fn [request]
+                              (assoc (invoke request) :engine-id "other-engine"))))))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                 (schema/representation->logical!
+                  compiled "Secret" ["sealed" "Ada"]
+                  (update-in metered [:adl-capabilities "Ciphertext" :operations]
+                             disj :decode))))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                 (schema/wasm-adl-capability
+                  {:engine-id "test-metered-wasm/v1"
+                   :module-bytes empty-wasm-module :module-cid module-cid
+                   :operations #{:network} :invoke invoke})))))
 
 (deftest invalid-union-representation-tables-fail-at-compile-time
   (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
