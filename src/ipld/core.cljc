@@ -120,6 +120,34 @@
     (put! cid bytes)
     cid))
 
+(defn- read-varint
+  "Unsigned LEB128 at OFFSET of a byte vector, or nil. Bounded at 5 groups so
+   a malformed header cannot spin."
+  [bytes offset]
+  (loop [i offset shift 0 value 0]
+    (when (and (< i (count bytes)) (< shift 35))
+      (let [b (bit-and (long (nth bytes i)) 0xff)
+            value (+ value (bit-shift-left (bit-and b 0x7f) shift))]
+        (if (zero? (bit-and b 0x80))
+          {:value value :next (inc i)}
+          (recur (inc i) (+ shift 7) value))))))
+
+(defn cid-codec
+  "Codec number a CIDv1 string declares, or nil when it cannot be read.
+
+   Reading it is what lets a foreign codec be reported as a foreign codec.
+   Recomputing a dag-cbor CID over a raw block's bytes produces a different
+   string, so without this the traversal reports a CID mismatch -- which sends
+   whoever reads the error looking for a corrupt store, when the store was
+   right and the link simply pointed at something this codec cannot decode."
+  [cid]
+  (try
+    (let [bytes (vec (mf/cid->bytes cid))
+          version (read-varint bytes 0)]
+      (when (= 1 (:value version))
+        (:value (read-varint bytes (:next version)))))
+    (catch #?(:clj Exception :cljs :default) _ nil)))
+
 (defn get-verified-block
   "Fetch bytes at `expected-cid` and recompute their CID before returning them.
   Missing blocks return nil; a storage adapter returning different bytes under
@@ -127,6 +155,14 @@
   boundary."
   [get-fn expected-cid]
   (when-let [bytes (get-fn expected-cid)]
+    ;; Checked before the hash comparison, because otherwise a correct raw
+    ;; block reports as a mismatch: the recomputation assumes dag-cbor.
+    (let [codec (cid-codec expected-cid)]
+      (when (and codec (not= codec mf/codec-dag-cbor))
+        (throw (ex-info "ipld: block codec is not dag-cbor"
+                        {:type :ipld/unsupported-codec
+                         :cid expected-cid
+                         :codec codec}))))
     (let [actual (cid bytes)]
       (when-not (= expected-cid actual)
         (throw (ex-info "ipld: block CID mismatch"
