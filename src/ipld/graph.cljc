@@ -9,7 +9,8 @@
             [ipld.data-model :as dm]
             [ipld.link :as link]
             [ipld.selector :as selector]
-            [ipld.value :as value]))
+            [ipld.value :as value]
+            [multiformats.core :as mf]))
 
 (defn- positive-limit [limits k]
   (let [n (get limits k)]
@@ -58,7 +59,11 @@
    :matches (:matches cursor)
    :stats (dissoc (:stats cursor) :work)})
 
-(def cursor-checkpoint-version 1)
+;; 2: the envelope carries a content address for its cursor state. Version 1
+;; checkpoints are refused as an unknown version rather than as a digest
+;; mismatch, which is what the version field is for -- an old token should be
+;; told it is old, not told it is corrupt.
+(def cursor-checkpoint-version 2)
 
 (defn- encode-node-fields [cursor]
   (-> cursor
@@ -72,26 +77,49 @@
       (update :tasks #(mapv (fn [task] (update task :node ipld/decode)) %))
       (update :matches #(mapv (fn [match] (update match :value ipld/decode)) %))))
 
+(defn- cursor-content-address
+  "CID of the canonical bytes of the cursor state, so a checkpoint names the
+   traversal it actually holds."
+  [fields]
+  (mf/cidv1-raw (value/encode-value fields)))
+
 (defn checkpoint-cursor
   "Encode an immutable cursor as canonical `kotoba.value.v1` bytes. Decoded
   IPLD nodes are individually DAG-CBOR encoded so floats and Links retain
-  their Data Model identity across JVM/CLJS restoration."
+  their Data Model identity across JVM/CLJS restoration.
+
+  The envelope also carries a content address for the cursor state. A
+  checkpoint is resumed work, and it travels: it is handed to a peer, parked
+  in storage, and handed back. Validating only its shape means an edited
+  checkpoint restores cleanly and the traversal silently continues as a
+  different traversal -- a changed root resumes against a graph nobody asked
+  for, while every later CID check still passes, because each block is
+  faithfully verified against the wrong root."
   [cursor]
-  (value/encode-value
-   {:checkpoint/version cursor-checkpoint-version
-    :checkpoint/cursor (encode-node-fields cursor)}))
+  (let [fields (encode-node-fields cursor)]
+    (value/encode-value
+     {:checkpoint/version cursor-checkpoint-version
+      :checkpoint/cursor fields
+      :checkpoint/cid (cursor-content-address fields)})))
 
 (defn restore-cursor
-  "Restore a cursor checkpoint, rejecting unknown versions or malformed state."
+  "Restore a cursor checkpoint, rejecting unknown versions, malformed state, or
+   state that is not the state this checkpoint names."
   [bytes]
   (let [envelope (value/decode-value bytes)]
     (when-not (and (map? envelope)
-                   (= #{:checkpoint/version :checkpoint/cursor}
+                   (= #{:checkpoint/version :checkpoint/cursor :checkpoint/cid}
                       (set (keys envelope)))
                    (= cursor-checkpoint-version (:checkpoint/version envelope))
-                   (map? (:checkpoint/cursor envelope)))
+                   (map? (:checkpoint/cursor envelope))
+                   (string? (:checkpoint/cid envelope)))
       (throw (ex-info "ipld: invalid selection cursor checkpoint"
                       {:type :ipld/invalid-checkpoint})))
+    (when-not (= (:checkpoint/cid envelope)
+                 (cursor-content-address (:checkpoint/cursor envelope)))
+      (throw (ex-info "ipld: selection cursor checkpoint failed its content address"
+                      {:type :ipld/invalid-checkpoint
+                       :problem :checkpoint-content-address-mismatch})))
     (decode-node-fields (:checkpoint/cursor envelope))))
 
 (defn- push-in-order [tasks work]
