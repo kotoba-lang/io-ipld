@@ -74,11 +74,31 @@
   (data-model/validate! node)
   (cbor/encode (->cbor-data node)))
 
+(defn- byte-vector [value] (mapv #(bit-and % 0xff) (seq value)))
+
 (defn decode
-  "DAG-CBOR bytes → Clojure data; tag 42 becomes a `Link`, any other tag throws."
+  "DAG-CBOR bytes → Clojure data; tag 42 becomes a `Link`, any other tag throws.
+
+  DAG-CBOR is a *canonical* codec: for any node there is exactly one valid
+  encoding. Decoding alone does not enforce that, and the ways it fails to are
+  not exotic -- `18 05` reads as the integer 5, out-of-order map keys read as a
+  map, and duplicate map keys read as the last one wins. Bytes the encoder
+  would never have produced would then be accepted as the node they merely
+  resemble, which is the one thing a content-addressed identity layer cannot
+  afford: two byte strings would denote one value while having different CIDs.
+
+  So the round trip is required to be an identity, not a coincidence. The cost
+  is one extra encode per decode, paid at the layer whose entire job is
+  canonical form."
   [bytes]
   (let [node (<-cbor-data (cbor/decode bytes))]
     (data-model/validate! node)
+    (let [canonical (cbor/encode (->cbor-data node))]
+      (when-not (= (byte-vector bytes) (byte-vector canonical))
+        (throw (ex-info "ipld: bytes are not canonical DAG-CBOR"
+                        {:ipld/problem :non-canonical-dag-cbor
+                         :given-bytes (count (byte-vector bytes))
+                         :canonical-bytes (count (byte-vector canonical))}))))
     node))
 
 (defn cid
