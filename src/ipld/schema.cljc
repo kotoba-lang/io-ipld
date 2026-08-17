@@ -1337,7 +1337,9 @@
     (cond-> {:type type-name :nodes @(:nodes state) :value value}
       (get-in state [:adl-runtime :strict?])
       (assoc :adl-fuel-used @(get-in state [:adl-runtime :fuel-used])
-             :adl-receipts @(get-in state [:adl-runtime :receipts])))))
+             :adl-receipts @(get-in state [:adl-runtime :receipts])
+             :adl-determinism-checked?
+             (get-in state [:adl-runtime :check-determinism?])))))
 
 (declare decode-ref encode-ref)
 
@@ -1527,7 +1529,9 @@
                :logical-value logical}
         (get-in state [:adl-runtime :strict?])
         (assoc :adl-fuel-used @(get-in state [:adl-runtime :fuel-used])
-               :adl-receipts @(get-in state [:adl-runtime :receipts]))))))
+               :adl-receipts @(get-in state [:adl-runtime :receipts])
+               :adl-determinism-checked?
+               (get-in state [:adl-runtime :check-determinism?]))))))
 
 (defn- encode-text! [compiled ref value path]
   (let [definition (if (string? ref) (get-in compiled [:types ref]) ref)
@@ -1800,7 +1804,9 @@
              :value value :logical-value logical-value}
       (get-in state [:adl-runtime :strict?])
       (assoc :adl-fuel-used @(get-in state [:adl-runtime :fuel-used])
-             :adl-receipts @(get-in state [:adl-runtime :receipts])))))
+             :adl-receipts @(get-in state [:adl-runtime :receipts])
+             :adl-determinism-checked?
+             (get-in state [:adl-runtime :check-determinism?])))))
 
 (declare legacy-valid?)
 
