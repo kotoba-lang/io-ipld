@@ -1,4 +1,4 @@
-{:paths ["src"]
+{:paths ["src" "resources"]
  ;; The canonical IPLD DAG-CBOR layer: multiformats supplies CIDv1 assembly,
  ;; dag-cbor supplies canonical CBOR + generic tags (>= 9c60d58, the first
  ;; SHA with major-type-6 support); this repo owns the tag-42 link discipline.
