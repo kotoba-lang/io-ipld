@@ -1288,7 +1288,13 @@
   (consume! state depth path)
   (let [[kind body] (one-entry! definition path)]
     (case kind
-      "any" true
+      ;; `any` admits an arbitrary Data Model node, which is exactly why its
+      ;; children have to be walked: without this the node itself was charged
+      ;; and nothing beneath it was, so a caller could pass :max-depth 8 and
+      ;; receive a value nested a hundred thousand deep with no signal that the
+      ;; limit had not applied. A budget that cannot be told apart from one
+      ;; that held is the failure this repo keeps closing.
+      "any" (consume-data-children! state value depth path)
       "bool" (when-not (boolean? value) (fail! :kind-mismatch {:path path :expected kind :actual (data-kind value)}))
       "string" (when-not (string? value) (fail! :kind-mismatch {:path path :expected kind :actual (data-kind value)}))
       "bytes" (if-let [advanced (get-in body ["representation" "advanced"])]
