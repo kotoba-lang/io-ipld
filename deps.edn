@@ -3,7 +3,12 @@
  ;; dag-cbor supplies canonical CBOR + generic tags (>= 9c60d58, the first
  ;; SHA with major-type-6 support); this repo owns the tag-42 link discipline.
  :deps {io.github.kotoba-lang/io-multiformats {:git/sha "b3b157e683a943d4f2e9362d9366cceefff3f656"}
-        io.github.kotoba-lang/org-ietf-cbor {:git/sha "1dacfc40c77573e3f4553093de0e0000f18a7c08"}}
+        io.github.kotoba-lang/org-ietf-cbor {:git/sha "1dacfc40c77573e3f4553093de0e0000f18a7c08"}
+        ;; `ipld.dag-pb` decodes with the workspace's protobuf wire codec.
+        ;; It encodes without it: DAG-PB writes field 2 before field 1 and
+        ;; emits a default-valued Name, and a deterministic protobuf encoder
+        ;; correctly refuses to do either.
+        io.github.kotoba-lang/dev-protobuf {:git/sha "cfd0b29997abbcae918ec5e90fddd621dbfb97b6"}}
  :aliases
  {:test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner

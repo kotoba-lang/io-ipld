@@ -41,6 +41,37 @@ maps them to links:
 `links` is the one walk hydrate loops and GC need: `kotoba-lang/kotoba-client`
 traverses any block graph by `links` alone.
 
+## DAG-PB
+
+`ipld.dag-pb` is the other codec — the one UnixFS is written in, and the one
+where the `.proto` is not enough to produce a correct block. Two rules come
+from the reference implementation rather than the schema:
+
+- **`Links` is field 2, `Data` is field 1, and `Links` is written first.**
+  Wire order is descending. An encoder that emits ascending field numbers —
+  which is what a deterministic protobuf library correctly does — produces a
+  different block and therefore a different CID.
+- **`Name` is written even when empty.** Protobuf omits default-valued
+  optional fields; go-merkledag writes `12 00` on every file chunk link, and
+  the block is hashed as written.
+
+```clojure
+(require '[ipld.dag-pb :as dag-pb])
+
+(dag-pb/node->block {:links [{:hash leaf-cid :name "" :tsize 262144}]
+                     :data unixfs-file-header})
+;; => {:cid "bafybei…" :bytes #object[byte[]]}
+
+(dag-pb/decode block-bytes)  ; => {:links [{:cid :hash :name :tsize}] :data …}
+```
+
+Encoding is explicit here; only decoding delegates to `protobuf.wire`, whose
+any-order reading and unknown-field preservation are exactly right for blocks
+written by other implementations. The fixtures in `ipld.dag-pb-test` are real
+kubo 0.41 blocks pinned as hex — not output of this encoder. A codec checked
+only against itself is self-consistent, which is not the property anyone wants
+from a codec.
+
 ## IPLD layers
 
 This repository now keeps IPLD's layers distinct instead of treating CBOR as
