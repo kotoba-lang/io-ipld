@@ -67,10 +67,15 @@ advanced representation can execute. Tuple and stringjoin `fieldOrder`, map
 and struct stringpairs, struct stringjoin/listpairs, and typed scalar implicit
 values are executable. `representation->logical!` restores logical struct
 field names and implicit values; `logical->representation!` performs the
-inverse projection and validates its output. Delimiter-based representations
+inverse projection and validates its output. All six union representations use
+the stable logical shape `{:member TypeNameOrInlineDefn :value value}` and
+recursively project their selected member. Delimiter-based representations
 fail closed on duplicate keys, non-canonical numeric text, and unescaped
-delimiter collisions. Advanced representations remain capability-defined ADL
-boundaries rather than schema-owned transformations.
+delimiter collisions. Advanced map/list/bytes representations execute only
+through caller-owned `:adl-capabilities` containing explicit representation
+validation and `:decode`/`:encode` functions (with optional logical
+validation); the legacy `:adl-validators` validation-only API remains
+compatible.
 
 `ipld.graph/select-blocks` is intentionally transport-neutral. It requires
 explicit block, byte, path-depth, and match limits; rehashes every fetched

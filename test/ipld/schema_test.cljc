@@ -66,6 +66,11 @@ type Mode enum {
 type Names [String]
 type Labels {String:String}
 type Alias = Person
+type Wrapper struct { event Event }
+advanced PackedList
+type CompressedNames [String] representation advanced PackedList
+advanced PackedMap
+type CompressedLabels {String:String} representation advanced PackedMap
 type Secret bytes representation advanced Ciphertext")
 
 (def limits {:max-depth 32 :max-nodes 256})
@@ -269,3 +274,113 @@ type Defaults struct {
   (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
                (schema/compile-schema
                 (dsl/parse "type Bad struct { nested {String:String} } representation stringjoin { join \":\" }")))))
+
+(deftest all-union-representations-are-recursive-bidirectional-lenses
+  (let [compiled (schema/compile-schema (dsl/parse application-schema))
+        cases [["Event" {"person" {"name" "Ada"}}
+                {:member "Person" :value {"name" "Ada"}}]
+               ["Scalar" 42 {:member "Int" :value 42}]
+               ["Envelope" {"kind" "person" "value" {"name" "Ada"}}
+                {:member "Person" :value {"name" "Ada"}}]
+               ["Inline" {"kind" "error" "message" "bad"}
+                {:member "Error" :value {"message" "bad"}}]
+               ["Authorization" "user:ada"
+                {:member "Username" :value "ada"}]]]
+    (doseq [[type-name representation logical] cases]
+      (is (= logical
+             (:logical-value
+              (schema/representation->logical! compiled type-name representation limits))))
+      (is (= representation
+             (:value
+              (schema/logical->representation! compiled type-name logical limits)))))
+    (is (= {"event" {:member "Person" :value {"name" "Ada"}}}
+           (:logical-value
+            (schema/representation->logical!
+             compiled "Wrapper" {"event" {"person" {"name" "Ada"}}} limits))))
+    (is (= {"event" {"person" {"name" "Ada"}}}
+           (:value
+            (schema/logical->representation!
+             compiled "Wrapper"
+             {"event" {:member "Person" :value {"name" "Ada"}}} limits))))
+    (let [wire #?(:clj (byte-array [0 2 3])
+                  :cljs (js/Uint8Array.from #js [0 2 3]))
+          logical {:member "Rsa"
+                   :value #?(:clj (byte-array [2 3])
+                             :cljs (js/Uint8Array.from #js [2 3]))}
+          decoded (:logical-value
+                   (schema/representation->logical! compiled "PublicKey" wire limits))
+          encoded (:value
+                   (schema/logical->representation! compiled "PublicKey" logical limits))]
+      (is (= "Rsa" (:member decoded)))
+      (is (= [2 3] (vec (:value decoded))))
+      (is (= [0 2 3] (vec encoded))))))
+
+(deftest advanced-representations-use-explicit-transform-capabilities
+  (let [compiled (schema/compile-schema (dsl/parse application-schema))
+        adl-limits
+        (assoc limits :adl-capabilities
+               {"Ciphertext"
+                {:validate-representation #(and (vector? %) (= "sealed" (first %)))
+                 :decode second
+                 :encode (fn [logical] ["sealed" logical])
+                 :validate-logical string?}
+                "PackedList"
+                {:validate-representation string?
+                 :decode #(mapv str (seq %))
+                 :encode #(apply str %)
+                 :validate-logical vector?}
+                "PackedMap"
+                {:validate-representation string?
+                 :decode (fn [representation] {"label" representation})
+                 :encode (fn [logical] (get logical "label"))
+                 :validate-logical map?}})]
+    (is (schema/valid? compiled "Secret" ["sealed" "Ada"] adl-limits))
+    (is (not (schema/valid? compiled "Secret" ["sealed" "Ada"]
+                            (assoc adl-limits :max-nodes 2))))
+    (is (= "Ada"
+           (:logical-value
+            (schema/representation->logical! compiled "Secret"
+                                             ["sealed" "Ada"] adl-limits))))
+    (is (= ["sealed" "Ada"]
+           (:value
+            (schema/logical->representation! compiled "Secret" "Ada" adl-limits))))
+    (is (= ["a" "b"]
+           (:logical-value
+            (schema/representation->logical! compiled "CompressedNames" "ab" adl-limits))))
+    (is (= "ab"
+           (:value
+            (schema/logical->representation! compiled "CompressedNames"
+                                             ["a" "b"] adl-limits))))
+    (is (= {"label" "Ada"}
+           (:logical-value
+            (schema/representation->logical! compiled "CompressedLabels"
+                                             "Ada" adl-limits))))
+    (is (= "Ada"
+           (:value
+            (schema/logical->representation! compiled "CompressedLabels"
+                                             {"label" "Ada"} adl-limits))))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                 (schema/representation->logical!
+                  compiled "Secret" ["sealed" "Ada"]
+                  (assoc limits :adl-validators {"Ciphertext" vector?}))))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                 (schema/logical->representation! compiled "Secret" 42 adl-limits)))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                 (schema/logical->representation!
+                  compiled "Secret" "Ada"
+                  (assoc-in adl-limits [:adl-capabilities "Ciphertext" :encode]
+                            (constantly 42)))))))
+
+(deftest invalid-union-representation-tables-fail-at-compile-time
+  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+               (schema/compile-schema
+                (dsl/parse
+                 "type Bad union { | String \"a\" | String \"ab\" } representation stringprefix"))))
+  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+               (schema/compile-schema
+                (dsl/parse
+                 "type Bad union { | String int | Int string } representation kinded"))))
+  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+               (schema/compile-schema
+                (dsl/parse
+                 "type Bad union { | String \"a\" | String \"b\" } representation keyed")))))
