@@ -7,7 +7,9 @@
   (:require [clojure.set :as set]
             [clojure.string :as str]
             [ipld.data-model :as dm]
-            [ipld.link :as link]))
+            [ipld.link :as link]
+            [ipld.core :as core]
+            [multiformats.core :as mf]))
 
 (def prelude
   {"Any" {"any" {}} "Bool" {"bool" {}} "String" {"string" {}}
@@ -32,6 +34,7 @@
         (sequential? value) "list" :else nil))
 
 (defn- byte-vector [value] (mapv #(bit-and % 0xff) (seq value)))
+(defn- bytes-equal? [a b] (= (byte-vector a) (byte-vector b)))
 (defn- bytes-from [octets]
   #?(:clj (byte-array (map unchecked-byte octets))
      :cljs (js/Uint8Array.from (clj->js octets))))
@@ -683,9 +686,50 @@
                             (or (:adl-validators limits) {})))
               (or (:adl-capabilities limits) {})))
 
+(defn- wasm-capability? [capability]
+  (= :wasm (:execution capability)))
+
+(def adl-wasm-abi "ipld-adl-wasm-v1")
+(def adl-operations
+  #{:validate-representation :decode :encode :validate-logical})
+
+(defn wasm-adl-capability
+  "Construct a deny-by-default ADL Wasm host port. INVOKE receives a request
+  containing canonical DAG-CBOR input bytes and hard fuel/output/memory limits,
+  and must return the measured response contract verified by this namespace.
+  The trusted engine owns Wasm execution; the module itself receives no ambient
+  host capabilities through this API."
+  [{:keys [engine-id module-bytes module-cid operations invoke] :as options}]
+  (exact-keys! options #{:engine-id :module-bytes :module-cid :operations :invoke} #{}
+               [:wasm-adl-capability])
+  (when-not (and (string? engine-id) (pos? (count engine-id)))
+    (fail! :adl-wasm-engine-id-required {:engine-id engine-id}))
+  (when-not (bytes-like? module-bytes)
+    (fail! :adl-wasm-module-bytes-required {}))
+  (when-not (and (string? module-cid) (str/starts-with? module-cid "b"))
+    (fail! :adl-wasm-module-cid-required {:module-cid module-cid}))
+  (when-not (and (set? operations) (seq operations)
+                 (set/subset? operations adl-operations))
+    (fail! :invalid-adl-wasm-operations {:operations operations}))
+  (when-not (fn? invoke)
+    (fail! :adl-wasm-invoke-required {}))
+  {:execution :wasm :abi adl-wasm-abi :engine-id engine-id
+   :module-bytes module-bytes :module-cid module-cid
+   :operations operations :invoke invoke})
+
+(defn- operation-supported? [capabilities name operation]
+  (let [capability (get capabilities name)]
+    (if (wasm-capability? capability)
+      (contains? (:operations capability) operation)
+      (fn? (get capability operation)))))
+
 (defn- adl-capability! [capabilities name operation path]
-  (let [capability (get-in capabilities [name operation])]
-    (when-not (fn? capability)
+  (let [capability-map (get capabilities name)
+        capability (if (wasm-capability? capability-map)
+                     (:invoke capability-map)
+                     (get capability-map operation))]
+    (when-not (and (fn? capability)
+                   (operation-supported? capabilities name operation))
       (fail! (case operation
                :validate-representation :missing-adl-validator
                :decode :missing-adl-decoder
@@ -752,13 +796,20 @@
     (catch #?(:clj Exception :cljs :default) _ false)))
 
 (defn- adl-runtime [limits]
-  (let [strict? (boolean (seq (:adl-capabilities limits)))]
+  (let [capabilities (:adl-capabilities limits)
+        strict? (boolean (seq capabilities))
+        wasm? (boolean (some wasm-capability? (vals capabilities)))]
     {:strict? strict?
+     :wasm? wasm?
      :max-output-depth (positive-limit! limits :max-depth)
      :max-fuel (if strict? (positive-limit! limits :max-adl-fuel) 9007199254740991)
      :max-output-nodes (if strict? (positive-limit! limits :max-adl-output-nodes)
                            9007199254740991)
      :max-output-bytes (if strict? (positive-limit! limits :max-adl-output-bytes)
+                           9007199254740991)
+     :max-module-bytes (if wasm? (positive-limit! limits :max-adl-module-bytes)
+                           9007199254740991)
+     :max-memory-pages (if wasm? (positive-limit! limits :max-adl-memory-pages)
                            9007199254740991)
      :check-determinism? (true? (:check-adl-determinism? limits))
      :fuel-used (atom 0)
@@ -783,6 +834,93 @@
              {:adl name :operation operation :path path
               :message #?(:clj (.getMessage error) :cljs (.-message error))}))))
 
+(def ^:private wasm-header [0 97 115 109 1 0 0 0])
+
+(defn- charge-measured-fuel! [runtime amount operation path]
+  (when-not (and (integer? amount) (pos? amount))
+    (fail! :invalid-adl-measured-fuel
+           {:operation operation :path path :fuel-used amount}))
+  (let [remaining (- (:max-fuel runtime) @(:fuel-used runtime))]
+    (when (> amount remaining)
+      (fail! :adl-fuel-exceeded
+             {:operation operation :path path
+              :max-adl-fuel (:max-fuel runtime) :remaining remaining
+              :requested amount})))
+  (swap! (:fuel-used runtime) + amount)
+  amount)
+
+(defn- invoke-wasm-once! [runtime capability name operation value path]
+  (let [module-bytes (:module-bytes capability)]
+    (when-not (= adl-wasm-abi (:abi capability))
+      (fail! :unsupported-adl-wasm-abi {:adl name :abi (:abi capability)}))
+    (when-not (and (bytes-like? module-bytes)
+                   (= wasm-header (vec (take 8 (byte-vector module-bytes)))))
+      (fail! :invalid-adl-wasm-module {:adl name :path path}))
+    (when (> (count (byte-vector module-bytes)) (:max-module-bytes runtime))
+      (fail! :adl-wasm-module-bytes-exceeded
+             {:adl name :path path :max-adl-module-bytes (:max-module-bytes runtime)}))
+    (let [module-cid (mf/cidv1-raw module-bytes)
+          declared-cid (:module-cid capability)]
+      (when-not (= declared-cid module-cid)
+        (fail! :adl-wasm-module-cid-mismatch
+               {:adl name :declared declared-cid :actual module-cid}))
+      (let [input-bytes (core/encode value)
+            fuel-limit (- (:max-fuel runtime) @(:fuel-used runtime))
+            request {:abi adl-wasm-abi :engine-id (:engine-id capability)
+                     :module-bytes module-bytes :module-cid module-cid
+                     :operation operation :input-bytes input-bytes
+                     :fuel-limit fuel-limit
+                     :max-output-bytes (:max-output-bytes runtime)
+                     :max-memory-pages (:max-memory-pages runtime)}
+            response (invoke-once! (:invoke capability) name operation request path)]
+        (exact-keys! response
+                     #{:status :engine-id :module-cid :output-bytes
+                       :fuel-used :memory-pages}
+                     #{} [:adl name operation :response])
+        (when-not (= :ok (:status response))
+          (fail! :adl-wasm-trap {:adl name :operation operation :path path
+                                 :status (:status response)}))
+        (when-not (= module-cid (:module-cid response))
+          (fail! :adl-wasm-engine-module-cid-mismatch
+                 {:adl name :expected module-cid :actual (:module-cid response)}))
+        (when-not (= (:engine-id capability) (:engine-id response))
+          (fail! :adl-wasm-engine-id-mismatch
+                 {:adl name :expected (:engine-id capability)
+                  :actual (:engine-id response)}))
+        (let [memory-pages (:memory-pages response)]
+          (when-not (and (integer? memory-pages) (<= 0 memory-pages)
+                         (<= memory-pages (:max-memory-pages runtime)))
+            (fail! :adl-wasm-memory-exceeded
+                   {:adl name :operation operation :path path
+                    :memory-pages memory-pages
+                    :max-adl-memory-pages (:max-memory-pages runtime)})))
+        (let [output-bytes (:output-bytes response)]
+          (when-not (bytes-like? output-bytes)
+            (fail! :adl-wasm-output-bytes-required
+                   {:adl name :operation operation :path path}))
+          (when (> (count (byte-vector output-bytes)) (:max-output-bytes runtime))
+            (fail! :adl-output-bytes-exceeded
+                   {:path path :max-bytes (:max-output-bytes runtime)}))
+          (let [output (core/decode output-bytes)
+                canonical (core/encode output)]
+            (when-not (bytes-equal? output-bytes canonical)
+              (fail! :adl-wasm-output-not-canonical
+                     {:adl name :operation operation :path path}))
+            (let [fuel (charge-measured-fuel! runtime (:fuel-used response)
+                                              operation path)]
+              {:value output :fuel fuel :module-cid module-cid
+               :engine-id (:engine-id capability)
+               :memory-pages (:memory-pages response)
+               :input-cid (core/cid input-bytes)
+               :output-cid (core/cid output-bytes)})))))))
+
+(defn- invoke-capability-once! [runtime capability function name operation value path]
+  (if (wasm-capability? capability)
+    (invoke-wasm-once! runtime capability name operation value path)
+    (let [fuel (charge-fuel! runtime capability operation path)]
+      {:value (invoke-once! function name operation value path)
+       :fuel fuel})))
+
 (defn- invoke-adl! [state name operation value path]
   (let [capabilities (:adl-capabilities state)
         capability-map (get capabilities name)
@@ -792,20 +930,30 @@
                                   (:check-determinism? runtime)
                                   (contains? #{:decode :encode} operation))
         input-metrics (when (:strict? runtime) (measure-value! runtime value path))
-        first-cost (charge-fuel! runtime capability-map operation path)
-        output (invoke-once! function name operation value path)
-        second-output (when deterministic-check?
-                        (charge-fuel! runtime capability-map operation path)
-                        (invoke-once! function name operation value path))]
+        first-result (invoke-capability-once! runtime capability-map function
+                                              name operation value path)
+        output (:value first-result)
+        second-result (when deterministic-check?
+                        (invoke-capability-once! runtime capability-map function
+                                                 name operation value path))
+        second-output (:value second-result)]
     (when (and deterministic-check? (not (data-equal? output second-output)))
       (fail! :adl-nondeterministic {:adl name :operation operation :path path}))
     (when (:strict? runtime)
       (let [output-metrics (measure-value! runtime output path)
-            receipt {:adl name :operation operation
-                     :attempts (if deterministic-check? 2 1)
-                     :fuel (* first-cost (if deterministic-check? 2 1))
-                     :input input-metrics :output output-metrics
-                     :deterministic? (when deterministic-check? true)}]
+            receipt (cond->
+                     {:adl name :operation operation
+                      :attempts (if deterministic-check? 2 1)
+                      :fuel (+ (:fuel first-result) (or (:fuel second-result) 0))
+                      :input input-metrics :output output-metrics
+                      :deterministic? (when deterministic-check? true)
+                      :execution (if (wasm-capability? capability-map) :wasm :host)}
+                      (wasm-capability? capability-map)
+                      (assoc :module-cid (:module-cid first-result)
+                             :engine-id (:engine-id first-result)
+                             :input-cid (:input-cid first-result)
+                             :output-cid (:output-cid first-result)
+                             :memory-pages (:memory-pages first-result)))]
         (swap! (:receipts runtime) conj receipt)))
     output))
 
@@ -1200,9 +1348,8 @@
 
 (defn- decode-adl [state name value path]
   (let [capabilities (:adl-capabilities state)
-        logical (invoke-adl! state name :decode value path)
-        logical-validator (get-in capabilities [name :validate-logical])]
-    (when (and logical-validator
+        logical (invoke-adl! state name :decode value path)]
+    (when (and (operation-supported? capabilities name :validate-logical)
                (not (invoke-adl! state name :validate-logical logical path)))
       (fail! :adl-logical-rejected {:adl name :path path}))
     logical))
@@ -1414,9 +1561,8 @@
     (encode-ref compiled state ref value depth path)))
 
 (defn- encode-adl [state name logical path]
-  (let [capabilities (:adl-capabilities state)
-        logical-validator (get-in capabilities [name :validate-logical])]
-    (when (and logical-validator
+  (let [capabilities (:adl-capabilities state)]
+    (when (and (operation-supported? capabilities name :validate-logical)
                (not (invoke-adl! state name :validate-logical logical path)))
       (fail! :adl-logical-rejected {:adl name :path path}))
     (invoke-adl! state name :encode logical path)))

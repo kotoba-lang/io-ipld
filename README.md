@@ -89,6 +89,21 @@ Clojure functions are not instruction-preempted, so untrusted transforms still
 belong in a separately metered Wasm/process backend. The legacy
 `:adl-validators` validation-only API remains compatible.
 
+`ipld.schema/wasm-adl-capability` defines that backend boundary as
+`ipld-adl-wasm-v1`. The capability pins raw module bytes to a raw CID and an
+explicit operation set. Its trusted engine receives only canonical DAG-CBOR
+input plus the remaining fuel, maximum output bytes, and maximum memory pages;
+there is no ambient filesystem, network, clock, randomness, or host callback in
+the schema API. A successful engine response must be exactly
+`{:status :ok :engine-id ... :module-cid ... :output-bytes ... :fuel-used ...
+:memory-pages ...}`. The schema layer independently checks the Wasm
+magic/version, declared engine identity, and module CID, caps module/output
+bytes and memory pages, charges the engine-measured fuel, rejects non-canonical
+DAG-CBOR output, and records the
+module plus input/output CIDs in each receipt. Wasmtime, Kotoba's runtime, or a
+worker process can implement this synchronous port; the engine remains part of
+the trusted computing base because only it can measure guest instructions.
+
 `ipld.graph/select-blocks` is intentionally transport-neutral. It requires
 explicit block, byte, path-depth, and match limits; rehashes every fetched
 block; and returns the exact root-first block sequence a CAR writer needs.
