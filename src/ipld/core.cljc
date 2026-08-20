@@ -120,18 +120,6 @@
     (put! cid bytes)
     cid))
 
-(defn- read-varint
-  "Unsigned LEB128 at OFFSET of a byte vector, or nil. Bounded at 5 groups so
-   a malformed header cannot spin."
-  [bytes offset]
-  (loop [i offset shift 0 value 0]
-    (when (and (< i (count bytes)) (< shift 35))
-      (let [b (bit-and (long (nth bytes i)) 0xff)
-            value (+ value (bit-shift-left (bit-and b 0x7f) shift))]
-        (if (zero? (bit-and b 0x80))
-          {:value value :next (inc i)}
-          (recur (inc i) (+ shift 7) value))))))
-
 (defn cid-codec
   "Codec number a CIDv1 string declares, or nil when it cannot be read.
 
@@ -139,15 +127,21 @@
    Recomputing a dag-cbor CID over a raw block's bytes produces a different
    string, so without this the traversal reports a CID mismatch -- which sends
    whoever reads the error looking for a corrupt store, when the store was
-   right and the link simply pointed at something this codec cannot decode."
-  [cid]
-  (try
-    (let [bytes (vec (mf/cid->bytes cid))
-          version (read-varint bytes 0)]
-      (when (= 1 (:value version))
-        (:value (read-varint bytes (:next version)))))
-    (catch #?(:clj Exception :cljs :default) _ nil)))
+   right and the link simply pointed at something this codec cannot decode.
 
+   Delegates to `multiformats.core/cid->parts`. This used to parse the two
+   varint headers itself via a `defn-` `read-varint`, which accumulated with
+   `(bit-shift-left (bit-and b 0x7f) shift)` -- int32 on ClojureScript, so the
+   varint of 2^32 read as 4294967296 on the JVM and 0 on cljs. That is the same
+   defect `multiformats.core/varint` was fixed for on 2026-08-17; the copy here
+   was private and in another repo, so the two were never compared. Measured
+   and removed 2026-08-20.
+
+   Nothing reached it -- CID version 1 and the codecs in use are all one group
+   -- so this is the removal of a latent divergence, not a bug fix with a
+   symptom. The point is that there is now one decoder rather than two."
+  [cid]
+  (:codec (mf/cid->parts cid)))
 (defn get-verified-block
   "Fetch bytes at `expected-cid` and recompute their CID before returning them.
   Missing blocks return nil; a storage adapter returning different bytes under
