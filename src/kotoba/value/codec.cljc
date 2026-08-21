@@ -64,6 +64,31 @@
   [x]
   (value/encode-value x))
 
+(defn value-cid
+  "Return the CIDv1 DAG-CBOR logical address of one admitted immutable value.
+
+  This names canonical value bytes; it is neither a runtime handle nor an
+  authority grant. Equal values therefore have the same CID across processes
+  and runtimes, while their run-local handles may differ."
+  [x]
+  (mf/cidv1-dag-cbor (encode-value x)))
+
+(declare decode-value)
+
+(defn verify-value-cid
+  "Decode BYTES canonically and require them to have EXPECTED-CID.
+
+  Returns the decoded value. Decoding happens before the comparison so a byte
+  sequence that hashes correctly but is not a canonical `kotoba.value.v1`
+  value is still rejected closed."
+  [expected-cid bytes]
+  (let [decoded (decode-value bytes)
+        actual-cid (mf/cidv1-dag-cbor bytes)]
+    (when-not (= expected-cid actual-cid)
+      (reject! :value/cid-mismatch
+               {:expected-cid expected-cid :actual-cid actual-cid}))
+    decoded))
+
 (defn decode-value
   "Decode canonical `kotoba.value.v1` bytes and reject noncanonical input."
   [bytes]
