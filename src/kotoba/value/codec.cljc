@@ -5,7 +5,8 @@
   owns its DAG-CBOR building blocks. Consumers at compiler, provider, actor, and
   I/O boundaries should require this namespace instead: the language contract
   is a canonical value codec, not an IPLD node API."
-  (:require [ipld.value :as value]))
+  (:require [ipld.value :as value]
+            [multiformats.core :as mf]))
 
 (def codec-id value/codec-id)
 (def max-safe-integer value/max-safe-integer)
@@ -67,6 +68,39 @@
   "Decode canonical `kotoba.value.v1` bytes and reject noncanonical input."
   [bytes]
   (value/decode-value bytes))
+
+(defn value-cid
+  "The CIDv1 DAG-CBOR logical address of one admitted immutable value.
+
+  `lang/value-codec.edn` has named this operation under
+  `:kotoba.lang.value-codec/logical-address` with `:status :implemented` since
+  before it existed anywhere: measured 2026-08-20, neither this namespace nor
+  `ipld.value` defined it on any default branch, while a working copy on one
+  machine did. A spec that names a var is checked by
+  `com-junkawasaki/root scripts/verify-spec-var-claims.cljs`, which is what
+  reported it.
+
+  This names canonical value bytes. It is neither a runtime handle nor an
+  authority grant -- the spec's own `:not [:physical-address :runtime-handle
+  :authority]`. Equal values therefore have the same CID across processes and
+  runtimes, while their run-local handles may differ."
+  [x]
+  (mf/cidv1-dag-cbor (encode-value x)))
+
+(defn verify-value-cid
+  "Decode `bytes` canonically and require them to have `expected-cid`.
+
+  Returns the decoded value. Decoding happens BEFORE the comparison, so a byte
+  sequence that hashes correctly but is not a canonical `kotoba.value.v1` value
+  is still rejected -- a CID match is evidence about bytes, not about whether
+  those bytes are a value this codec admits."
+  [expected-cid bytes]
+  (let [decoded (decode-value bytes)
+        actual-cid (mf/cidv1-dag-cbor bytes)]
+    (when-not (= expected-cid actual-cid)
+      (reject! :value/cid-mismatch
+               {:expected-cid expected-cid :actual-cid actual-cid}))
+    decoded))
 
 (defn encode-bounded
   "Encode VALUE and reject an envelope larger than the ability MAX-BYTES."
