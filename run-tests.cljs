@@ -11,7 +11,8 @@
      nbb --classpath \"$(clojure -Spath)\" run-tests.cljs"
   (:require [cljs.test :as t]
             [ipld.link-test]
-            [ipld.schema-test]))
+            [ipld.schema-test]
+            [kotoba.value.value-cid-test]))
 
 (defmethod t/report [:cljs.test/default :end-run-tests] [m]
   (println (str "\nnbb: " (:test m) " tests, " (:pass m) " passed, "
@@ -19,4 +20,4 @@
   (when (pos? (+ (or (:fail m) 0) (or (:error m) 0)))
     (set! (.-exitCode js/process) 1)))
 
-(t/run-tests 'ipld.link-test 'ipld.schema-test)
+(t/run-tests 'ipld.link-test 'ipld.schema-test 'kotoba.value.value-cid-test)
