@@ -17,6 +17,20 @@
                         (codec/encode-value value)))
       (is (= value (codec/decode-value (codec/encode-value value)))))))
 
+(deftest value-cid-is-logical-identity-not-a-runtime-address
+  (let [left (array-map :name "Jun" :age 30)
+        right {:age 30 :name "Jun"}
+        cid (codec/value-cid left)]
+    (is (= cid (codec/value-cid right))
+        "map construction order cannot change a ValueCID")
+    (is (= left (codec/verify-value-cid cid (codec/encode-value right))))
+    (try
+      (codec/verify-value-cid (codec/value-cid :different)
+                              (codec/encode-value right))
+      (is false "a mismatched logical address must fail closed")
+      (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
+        (is (= :value/cid-mismatch (:problem (ex-data e))))))))
+
 (deftest facade-keeps-explicit-float-semantics
   (let [wrapped (codec/float64 0.5)
         decoded (codec/decode-value (codec/encode-value wrapped))
