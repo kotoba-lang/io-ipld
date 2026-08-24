@@ -129,7 +129,21 @@
   (is (= :value/float-infinite (problem-of #(v/float64 ##Inf))))
   (is (= :value/float-infinite (problem-of #(v/float64 ##-Inf))))
   (testing "-0.0 is rejected, NOT normalized to 0.0 — normalizing moves an identity"
-    (is (= :value/float-negative-zero (problem-of #(v/float64 -0.0)))))
+    ;; `negative-zero` is COMPUTED, not written as a literal. Measured
+    ;; 2026-08-24 on nbb 1.4.210 and 1.5.212: a `-0.0` LITERAL inside a
+    ;; function body reads back as +0.0 under SCI, while the same literal at
+    ;; the top level, behind a top-level `def`, or computed with `(- 0.0)`
+    ;; keeps its sign. `#(v/float64 -0.0)` is a function body, so the thunk
+    ;; called `float64` on +0.0 and this assertion failed on ClojureScript —
+    ;; not because the codec was wrong (it rejects a real -0.0 on both
+    ;; runtimes) but because the test could not construct one there.
+    ;;
+    ;; It had never been noticed: `run-tests.cljs` named three of the ten
+    ;; `.cljc` suites, and this was not one of them.
+    (let [negative-zero (- 0.0)]
+      (is (neg? (/ 1.0 negative-zero))
+          "the fixture really is -0.0 on this runtime, whatever the printer says")
+      (is (= :value/float-negative-zero (problem-of #(v/float64 negative-zero))))))
   (testing "a peer cannot smuggle one back in through decode"
     (let [neg-inf-bits (cbor/encode [3 (bs 0xff 0xf0 0 0 0 0 0 0)])]
       (is (= :value/float-infinite (problem-of #(v/decode-value neg-inf-bits)))))))

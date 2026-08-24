@@ -1,17 +1,35 @@
 (ns run-tests
-  "The lightweight Link and Schema suites on nbb.
+  "Every `.cljc` suite in this repository, run under nbb.
 
-   The compiled ClojureScript suite cannot expose SCI's type/protocol boundary.
-   This is therefore a required, separate qualification target for consumers
-   that execute the shared `.cljc` sources through nbb.
+   The compiled ClojureScript suite cannot expose SCI's type/protocol boundary,
+   so this is a required, separate qualification target for consumers that
+   execute the shared `.cljc` sources through nbb. The fleet gate
+   `nbb-cross-runtime-io-ipld` runs this file at a pinned nbb version.
 
-   Run it with the two sibling checkouts on the classpath (base32 and cbor are
-   all the link layer needs; `@noble/hashes` is only for `ipld.core`):
+   It used to name three of the ten. That is not a smaller version of the same
+   check -- the seven it left out were the ones the gate's own header is about
+   (`ipld.link/link-cid` reading a deftype field, `(count uint8-array)`), and
+   running them for the first time on 2026-08-24 found `value_test`'s -0.0
+   fixture had never worked on this runtime. Anything added to `test/` as
+   `.cljc` belongs in BOTH lists below; being required is not being run.
+
+   The five `.clj` suites stay `.clj` on purpose (corpus, fuzz, and lens
+   property tests with JVM oracles) -- split by which runtime a test can run
+   on, not by subject (root ADR-2608730000).
+
+   Run it with the sibling checkouts on the classpath:
 
      nbb --classpath \"$(clojure -Spath)\" run-tests.cljs"
   (:require [cljs.test :as t]
+            [ipld.core-test]
+            [ipld.dag-pb-test]
+            [ipld.data-model-test]
+            [ipld.graph-test]
             [ipld.link-test]
             [ipld.schema-test]
+            [ipld.selector-test]
+            [ipld.value-test]
+            [kotoba.value.codec-test]
             [kotoba.value.value-cid-test]))
 
 (defmethod t/report [:cljs.test/default :end-run-tests] [m]
@@ -20,4 +38,13 @@
   (when (pos? (+ (or (:fail m) 0) (or (:error m) 0)))
     (set! (.-exitCode js/process) 1)))
 
-(t/run-tests 'ipld.link-test 'ipld.schema-test 'kotoba.value.value-cid-test)
+(t/run-tests 'ipld.core-test
+             'ipld.dag-pb-test
+             'ipld.data-model-test
+             'ipld.graph-test
+             'ipld.link-test
+             'ipld.schema-test
+             'ipld.selector-test
+             'ipld.value-test
+             'kotoba.value.codec-test
+             'kotoba.value.value-cid-test)
