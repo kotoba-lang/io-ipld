@@ -22,6 +22,7 @@
      nbb --classpath \"$(clojure -Spath)\" run-tests.cljs"
   (:require [cljs.test :as t]
             [ipld.core-test]
+            [ipld.dag-json-test]
             [ipld.dag-pb-test]
             [ipld.data-model-test]
             [ipld.graph-test]
@@ -39,6 +40,7 @@
     (set! (.-exitCode js/process) 1)))
 
 (t/run-tests 'ipld.core-test
+             'ipld.dag-json-test
              'ipld.dag-pb-test
              'ipld.data-model-test
              'ipld.graph-test

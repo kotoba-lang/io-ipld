@@ -72,6 +72,32 @@ kubo 0.41 blocks pinned as hex — not output of this encoder. A codec checked
 only against itself is self-consistent, which is not the property anyone wants
 from a codec.
 
+## DAG-JSON
+
+`ipld.dag-json` is the codec that reads as JSON and still addresses. It exists
+because IPNI publishes advertisements in it and nothing here spoke it.
+
+```clojure
+(require '[ipld.dag-json :as dag-json])
+
+(dag-json/encode-string {"Provider" "12D3Koo…" "IsRm" false})
+;; => {"IsRm":false,"Provider":"12D3Koo…"}
+
+(dag-json/node->block advertisement)  ; => {:cid "baguqeera…" :bytes …}
+```
+
+Three rules carry the whole codec: map keys are sorted bytewise rather than
+kept in schema order, a link is `{"/": "bafy…"}`, and a byte string is
+`{"/": {"bytes": "<standard base64, unpadded>"}}` — not base64url. `<`, `>`
+and `&` are **not** escaped, though Go's `encoding/json` escapes them by
+default; escaping them would change the CID.
+
+None of that is guessed. `ipld.dag-json-test` pins the encoder to an
+advertisement fetched from a live third-party IPNI publisher, whose served
+bytes hash to the CID it is served under — which makes those bytes the
+canonical form by definition. The fixture is built in go-libipni's schema
+field order, so an encoder that kept insertion order would fail it.
+
 ## IPLD layers
 
 This repository now keeps IPLD's layers distinct instead of treating CBOR as
@@ -81,6 +107,7 @@ the whole stack:
 |---|---|
 | `ipld.data-model` | the nine Data Model kinds, lossless validation, and the universal `INode` interface used by native values and ADLs |
 | `ipld.core` | strict DAG-CBOR representation plus CID-verified block reads |
+| `ipld.dag-json` | canonical DAG-JSON representation: sorted keys, `{"/":…}` links, base64 byte strings |
 | `ipld.schema-dsl` | the user-facing IPLD Schema syntax compiled into normalized Schema DMT |
 | `ipld.schema` | Schema-Schema DMT shape/reference validation and bounded representation unification, including metered ADL capabilities |
 | `ipld.selector` | non-conditional IPLD selectors over native values or ADL Nodes, including bounded recursion, transparent Link resolution, and strict Data Model/DAG-CBOR codecs |
