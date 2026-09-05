@@ -91,3 +91,51 @@
   (is (= (ipld/link some-cid) (ipld/link some-cid)))
   (is (not= (ipld/link some-cid) (ipld/link (mf/kotoba-cid "other"))))
   (is (= (hash (ipld/link some-cid)) (hash (ipld/link some-cid)))))
+
+;; ── the canonicality check, after it stopped allocating two vectors ────────
+;;
+;; `decode` rejects bytes that are not what `encode` would have produced. The
+;; predicate behind that was rewritten on 2026-09-05 (ADR-2609051700) for
+;; cost, not for behaviour, so these pin the behaviour on both sides: the
+;; accept, and a rejection for each way the bytes can differ.
+(deftest decode-accepts-its-own-encoding
+  (let [node {"a" 1 "b" [1 2 3] "s" "x"}]
+    (is (= node (ipld/decode (ipld/encode node))))))
+
+(defn- problem-of [f]
+  (:ipld/problem
+   (ex-data (try (f) nil (catch #?(:clj Exception :cljs js/Error) e e)))))
+
+(deftest decode-rejects-out-of-order-map-keys
+  ;; DAG-CBOR orders map keys by length then bytewise, so {"b" 2 "aa" 1}
+  ;; encodes as "b" first. These bytes put "aa" first: they decode to a map,
+  ;; which is exactly why decoding alone cannot be trusted here.
+  (let [out-of-order #?(:clj (byte-array (map unchecked-byte
+                                              [0xA2 0x62 0x61 0x61 0x01 0x61 0x62 0x02]))
+                        :cljs (js/Uint8Array.from
+                               #js [0xA2 0x62 0x61 0x61 0x01 0x61 0x62 0x02]))
+        canonical #?(:clj (byte-array (map unchecked-byte
+                                           [0xA2 0x61 0x62 0x02 0x62 0x61 0x61 0x01]))
+                     :cljs (js/Uint8Array.from
+                            #js [0xA2 0x61 0x62 0x02 0x62 0x61 0x61 0x01]))]
+    ;; the control: the canonical spelling of the same map is accepted
+    (is (= {"aa" 1 "b" 2} (ipld/decode canonical)))
+    ;; and the non-canonical one is refused FOR BEING NON-CANONICAL, not for
+    ;; some other failure that happens to throw first
+    (is (= :non-canonical-dag-cbor
+           (problem-of #(ipld/decode out-of-order))))))
+
+(deftest decode-rejects-non-canonical-integer-width
+  ;; `18 05` is the integer 5 written in two bytes; canonical DAG-CBOR writes
+  ;; it as `05`. This is the exact case `decode`'s docstring names.
+  (let [wide #?(:clj (byte-array [(byte 0x18) (byte 0x05)])
+                :cljs (js/Uint8Array.from #js [0x18 0x05]))]
+    (is (thrown? #?(:clj Exception :cljs js/Error) (ipld/decode wide)))
+    (is (= :non-canonical-dag-cbor (problem-of #(ipld/decode wide))))))
+
+(deftest decode-refuses-a-truncated-block
+  (let [bytes (ipld/encode {"a" 1 "b" 2})
+        n #?(:clj (alength ^bytes bytes) :cljs (.-length bytes))
+        short #?(:clj (java.util.Arrays/copyOf ^bytes bytes (int (dec n)))
+                 :cljs (.slice bytes 0 (dec n)))]
+    (is (thrown? #?(:clj Exception :cljs js/Error) (ipld/decode short)))))
