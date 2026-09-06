@@ -25,6 +25,7 @@
             [ipld.dag-json-test]
             [ipld.dag-pb-test]
             [ipld.data-model-test]
+            [ipld.fbl-test]
             [ipld.graph-test]
             [ipld.link-test]
             [ipld.schema-test]
@@ -42,6 +43,7 @@
 (t/run-tests 'ipld.core-test
              'ipld.dag-json-test
              'ipld.dag-pb-test
+             'ipld.fbl-test
              'ipld.data-model-test
              'ipld.graph-test
              'ipld.link-test
