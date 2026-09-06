@@ -623,6 +623,34 @@
       (fail! :map-key-representation-must-be-string
              {:type-name name :key-type (get body "keyType")}))))
 
+(defn- advanced-entry?
+  "Is `entry` a well-formed `advanced` declaration?
+
+  `{}` is the IPLD Schema DMT's own shape and stays valid: it declares an ADL
+  by name and says nothing about its layout version. `{\"version\" n}` is this
+  library's extension, and `n` must be a positive integer.
+
+  Nothing else is accepted, and in particular an unrecognised key is not
+  ignored -- a declaration this code cannot interpret must not be read as one
+  it can."
+  [entry]
+  (and (map? entry)
+       (case (set (keys entry))
+         #{} true
+         #{"version"} (let [v (get entry "version")]
+                        (and (integer? v) (pos? v)))
+         false)))
+
+(defn advanced-version
+  "Declared layout version of ADL `name` in `compiled`, or nil when the schema
+  declares none.
+
+  nil is an ordinary answer and not a zero: a schema that says nothing about a
+  version has not said version 1, and `require-adl-versions!` refuses to guess
+  which it meant."
+  [compiled name]
+  (get (:advanced-versions compiled) name))
+
 (defn compile-schema
   "Validate normalized DMT and return an immutable compiled schema map."
   [dmt]
@@ -633,7 +661,7 @@
     (when-not (and (map? types) (every? string? (keys types)))
       (fail! :types-map-required {}))
     (when-not (and (map? advanced) (every? string? (keys advanced))
-                   (every? #(= {} %) (vals advanced)))
+                   (every? advanced-entry? (vals advanced)))
       (fail! :advanced-map-required {}))
     (doseq [name (keys advanced)]
       (when-not (re-matches #"[A-Z][A-Za-z0-9_]*" name)
@@ -646,7 +674,11 @@
           (fail! :unsupported-type-kind {:name name :kind kind})))
       (validate-definition-shape! definition [name]))
     (let [all-types (merge prelude types)
-          compiled {:dmt dmt :types all-types :advanced (set (keys advanced))}]
+          compiled {:dmt dmt :types all-types :advanced (set (keys advanced))
+                    :advanced-versions (into {} (keep (fn [[n e]]
+                                                        (when-let [v (get e "version")]
+                                                          [n v])))
+                                             advanced)}]
       (doseq [[name definition] types
               reference (type-refs definition)]
         (when-not (contains? all-types reference)
@@ -661,6 +693,7 @@
               adl (adl-refs definition)]
         (when-not (contains? advanced adl)
           (fail! :unknown-advanced-reference {:type-name name :advanced adl})))
+
       (doseq [[name definition] types
               :let [[kind body] (one-entry! definition name)]
               :when (= kind "struct")
@@ -685,6 +718,34 @@
                               [name {:validate-representation validator}])
                             (or (:adl-validators limits) {})))
               (or (:adl-capabilities limits) {})))
+
+(defn require-adl-versions!
+  "Refuse when a capability and the schema disagree about an ADL's version.
+
+  The disagreement is worth a refusal because a name is not a layout. A reader
+  written for one version of an ADL and data written in another agree on the
+  name, resolve the same capability, and disagree about the bytes -- the
+  traversal succeeds and returns values that are structurally real and
+  logically wrong. Nothing downstream can tell that from a correct read, which
+  is why it is checked here rather than reported later.
+
+  The check is symmetric and has no default. A schema declaring version 2 is
+  refused by a capability declaring 1 AND by a capability declaring nothing,
+  because `nil` is not `1`: a capability that says nothing about versions has
+  not claimed to implement the one the data was written in. A schema declaring
+  no version is likewise refused by a capability that declares one. Either
+  side may be silent; they may not be silent in different directions.
+
+  Capabilities without a `:version` key remain valid against schemas that
+  declare none, which is every schema written before this existed."
+  [compiled capabilities]
+  (doseq [[name capability] capabilities
+          :let [declared (advanced-version compiled name)
+                claimed (:version capability)]]
+    (when-not (= declared claimed)
+      (fail! :adl-version-mismatch
+             {:adl name :schema-version declared :capability-version claimed})))
+  capabilities)
 
 (defn- wasm-capability? [capability]
   (= :wasm (:execution capability)))
@@ -1337,7 +1398,8 @@
   (let [state {:max-depth (positive-limit! limits :max-depth)
                :max-nodes (positive-limit! limits :max-nodes)
                :nodes (atom 0)
-               :adl-capabilities (adl-capabilities limits)
+               :adl-capabilities (require-adl-versions!
+                                  compiled (adl-capabilities limits))
                :adl-runtime (adl-runtime limits)}]
     (unify-ref! compiled state type-name value 0 [])
     (cond-> {:type type-name :nodes @(:nodes state) :value value}
