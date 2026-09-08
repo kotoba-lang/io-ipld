@@ -4,6 +4,7 @@
             [ipld.schema :as schema]
             [ipld.schema-dsl :as dsl]
             [ipld.core :as core]
+            [ipld.link :as link]
             [multiformats.core :as mf]))
 
 (def official-example
@@ -591,3 +592,26 @@ type Defaults struct {
                (:logical-value
                 (schema/representation->logical!
                  representations "StringMap" wire limits))))))))
+
+;; ---------------------------------------------------------------------------
+;; A Link under an `any`-kind position is one node, not three
+;; ---------------------------------------------------------------------------
+;;
+;; `ipld.link/Link` is a `defrecord` (nbb portability fix), so `map? link`
+;; is true exactly like it is for a real map. `unify!`'s `any`-kind budget
+;; walker (`consume-data-children!`) has to match `link?` before `map?`, or a
+;; Link is walked as a synthetic one-key map (`{:cid <cid-string>}`) and
+;; charged 3 nodes (itself, the `:cid` key, the CID string) instead of the 1
+;; node a bare string of the same shape costs. That is a strictly
+;; over-conservative miscount — `:max-nodes`/`:max-depth` can trip sooner
+;; than intended on a document that puts links in `any` positions — not an
+;; encoding or identity bug, but still a wrong count.
+(deftest any-kind-link-is-a-single-node
+  (let [compiled (schema/compile-schema (dsl/parse "type T any"))
+        cid "bafyreibwzifccnbxlg3p7yh4pwqbnhi7z3q6z5a4x3v6xj4v2q6f6gq2vq"
+        l (link/link cid)
+        limits {:max-depth 32 :max-nodes 256}]
+    (is (= 1 (:nodes (schema/unify! compiled "T" "hello" limits)))
+        "a same-shaped string costs exactly one node")
+    (is (= 1 (:nodes (schema/unify! compiled "T" l limits)))
+        "a Link must cost exactly one node, not three")))
