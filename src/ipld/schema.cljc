@@ -5,7 +5,7 @@
   named references; `valid?`/`unify!` then match plain IPLD Data Model values
   without changing their content identity."
   (:require [clojure.set :as set]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [ipld.data-model :as dm]
             [ipld.link :as link]
             [ipld.core :as core]

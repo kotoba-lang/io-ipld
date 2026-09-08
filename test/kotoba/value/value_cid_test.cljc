@@ -5,7 +5,7 @@
   copy holding its own changes to that file still applies."
   (:require #?(:clj  [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
-            [clojure.string]
+            [kotoba.lang.text]
             [kotoba.value.codec :as codec]
             [ipld.link :as link]
             [multiformats.core :as mf]))
@@ -28,7 +28,7 @@
 (deftest a-cid-is-a-base32-cidv1
   (let [c (codec/value-cid {:a 1})]
     (is (string? c))
-    (is (clojure.string/starts-with? c "b") "base32 'b' multibase")))
+    (is (kotoba.lang.text/starts-with? c "b") "base32 'b' multibase")))
 
 (deftest links-are-values-and-address-like-any-other
   (testing "tag-42 is code 8 in this codec, so a Link is not a string"

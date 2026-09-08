@@ -5,7 +5,7 @@
   does not load CID hashing, so canonical value consumers without storage or
   content-addressing authority need no npm hash implementation."
   (:require [cbor.core :as cbor]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [multiformats.base32 :as base32]))
 
 (defprotocol ILink
