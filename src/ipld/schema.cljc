@@ -1022,6 +1022,21 @@
 
 (defn- consume-data-children! [state value depth path]
   (cond
+    ;; `Link` is a `defrecord` (portability fix, `ipld.link`), so `map? value`
+    ;; is true for a Link exactly like it is for a real map — a Link record
+    ;; has to be matched here BEFORE `map?`, same as every other Data Model
+    ;; dispatch site in this repo (`ipld.core/->cbor-data`,
+    ;; `ipld.data-model/kind`, `ipld.value/value->form`). Without this, a Link
+    ;; reached through an `any`-kind position was walked as a one-key map
+    ;; (`{:cid <cid-string>}`) instead of being charged as the single atomic
+    ;; node it is — `unify!` on a bare string charges 1 node, a Link charged
+    ;; 3 (self + the synthetic `:cid` key + its string value). That is a
+    ;; strictly MORE conservative miscount (a document with `any`-typed links
+    ;; could hit `:max-nodes`/`:max-depth` sooner than it should), not a
+    ;; security regression, but it is still a wrong node count.
+    (link/link? value)
+    nil
+
     (map? value)
     (doseq [[key item] value]
       (consume! state (inc depth) (conj path key :key))
