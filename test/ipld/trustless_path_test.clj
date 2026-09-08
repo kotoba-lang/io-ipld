@@ -64,17 +64,46 @@
              (failure #(graph/resolve-path
                         (fn [cid] (if (= cid a) (store b) (store cid)))
                         root ["a" "x" "s"] limits)))))
-    (testing "the link points at a codec this traversal cannot decode"
+    (testing "the link points at a codec this traversal cannot re-address"
       ;; Distinct from a mismatch, and it has to be: the store is telling the
       ;; truth. Reporting a mismatch here sends the reader hunting corruption
       ;; that is not there.
+      ;;
+      ;; This used to use a RAW block as the example. That was true of the
+      ;; implementation and false of IPLD -- raw is the ordinary shape of a
+      ;; byte leaf, so refusing it meant a traversal could not cross a link
+      ;; into one at all. Measured 2026-09-08 on the live IPQ selector surface:
+      ;; a selector reaching a Link to a raw leaf answered HTTP 500, while the
+      ;; same selector aimed at a string or a number one position away in the
+      ;; same vector answered 200. dag-pb is the honest example of this case --
+      ;; a different hash construction AND a different decoder.
+      (let [payload (ipld/encode {"z" 9})
+            pb-cid "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
+            _ (swap! blocks assoc pb-cid payload)
+            {:keys [cid bytes]} (ipld/node->block {"w" (link/link pb-cid)})
+            _ (swap! blocks assoc cid bytes)]
+        (is (= :ipld/unsupported-codec
+               (failure #(graph/resolve-path store cid ["w"] limits))))))
+    (testing "a raw leaf is reached, and asking for a field inside it does not match"
+      ;; The two things the codec refusal used to conflate. Reaching the Bytes
+      ;; node succeeds and yields its bytes; asking for a field inside one
+      ;; yields ZERO MATCHES rather than an error -- what a selector does on
+      ;; any node that is not a map or a list, a string and an int included.
+      ;;
+      ;; Asserted through `:matches` and not through `:value` alone: a path
+      ;; that matched a null and a path that matched nothing both carry
+      ;; `:value nil`, and only the match count tells them apart.
       (let [payload (ipld/encode {"z" 9})
             raw-cid (mf/cidv1-raw payload)
             _ (swap! blocks assoc raw-cid payload)
             {:keys [cid bytes]} (ipld/node->block {"w" (link/link raw-cid)})
-            _ (swap! blocks assoc cid bytes)]
-        (is (= :ipld/unsupported-codec
-               (failure #(graph/resolve-path store cid ["w" "z"] limits))))))))
+            _ (swap! blocks assoc cid bytes)
+            reached (graph/resolve-path store cid ["w"] limits)
+            inside (graph/resolve-path store cid ["w" "z"] limits)]
+        (is (= 1 (count (:matches reached))))
+        (is (= (vec payload) (vec (:value reached))))
+        (is (= [] (:matches inside)))
+        (is (nil? (:value inside)))))))
 
 (deftest a-cid-declares-its-codec
   (is (= mf/codec-dag-cbor (ipld/cid-codec (ipld/cid (ipld/encode {"a" 1})))))

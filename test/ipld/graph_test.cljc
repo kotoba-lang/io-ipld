@@ -2,7 +2,9 @@
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
             [ipld.core :as ipld]
-            [ipld.graph :as graph]))
+            [ipld.data-model]
+            [ipld.graph :as graph]
+            [multiformats.core]))
 
 (def limits {:max-blocks 8 :max-bytes 4096 :max-depth 8 :max-matches 8})
 
@@ -147,3 +149,83 @@
     (is (= 1.1 (-> drained :cursor graph/cursor-result :matches first :value)))
     (is (thrown? #?(:clj Exception :cljs js/Error)
                  (graph/restore-cursor (ipld/encode {"version" 999}))))))
+
+;; ── crossing a link into a RAW block ────────────────────────────────────────
+;;
+;; The shape every byte-carrying DAG has: a DAG-CBOR root whose links point at
+;; raw leaves. `raw-leaves` is the IPFS default, `:bytes` is a Data Model kind,
+;; and there is nothing inside a raw block to explore -- so a traversal must be
+;; able to reach one, include it, and stop.
+;;
+;; It could not. `ipld/get-verified-block` assumed dag-cbor and threw
+;; `block codec is not dag-cbor` for anything else, so `ipld.graph` -- the
+;; traversal core under both IPQ and the GraphSync adapter -- could only cross
+;; links inside an all-dag-cbor DAG. Measured 2026-09-08 on the live
+;; `ipfs.kotobase.net/ipq/v1` surface: a selector reaching a Link to a raw leaf
+;; answered HTTP 500, while the same selector aimed one position left or right
+;; (a string, a number) in the same vector answered 200.
+
+(defn raw-fixture
+  "A DAG-CBOR root linking a raw leaf, plus a DAG-CBOR leaf beside it so a
+   failure that hits BOTH kinds is distinguishable from one that hits raw."
+  []
+  (let [store (atom {})
+        put! (fn [cid bytes] (swap! store assoc cid bytes))
+        payload #?(:clj (.getBytes "the bytes in a raw leaf" "UTF-8")
+                   :cljs (.encode (js/TextEncoder.) "the bytes in a raw leaf"))
+        raw-cid (multiformats.core/cidv1-raw payload)
+        _ (put! raw-cid payload)
+        cbor-leaf (ipld/put-node! put! {"name" "cbor-leaf"})
+        root (ipld/put-node! put! {"raw" (ipld/link raw-cid)
+                                   "cbor" (ipld/link cbor-leaf)})]
+    {:store store :raw raw-cid :payload payload :cbor cbor-leaf :root root
+     :get-fn (fn [cid] (get @store cid))}))
+
+(deftest a-raw-block-is-verified-under-its-own-codec
+  (let [{:keys [raw payload get-fn]} (raw-fixture)]
+    ;; Not merely "does not throw": the bytes must come back, and they must be
+    ;; the bytes that were stored.
+    ;; `vec`, not `seq`: two seqs over typed arrays do not compare equal
+    ;; under nbb/SCI even when every element does, which is the runtime
+    ;; difference this repository keeps a separate qualification target for.
+    (is (= (vec payload) (vec (ipld/get-verified-block get-fn raw))))
+    ;; And the guard must still be a guard. A raw CID whose bytes were swapped
+    ;; has to fail closed, or the fix would have removed verification rather
+    ;; than corrected it.
+    (let [tampered (fn [_] #?(:clj (.getBytes "different" "UTF-8")
+                              :cljs (.encode (js/TextEncoder.) "different")))]
+      (is (thrown? #?(:clj Exception :cljs :default)
+                   (ipld/get-verified-block tampered raw))))))
+
+(deftest a-raw-block-is-a-bytes-node
+  (let [{:keys [raw payload get-fn]} (raw-fixture)]
+    (is (= :bytes (ipld.data-model/kind (ipld/get-node get-fn raw))))
+    (is (= (vec payload) (vec (ipld/get-node get-fn raw))))))
+
+(deftest traversal-crosses-a-link-into-a-raw-leaf
+  (let [{:keys [root raw get-fn]} (raw-fixture)
+        result (graph/resolve-path get-fn root ["raw"] limits)]
+    ;; Root first, then the raw leaf -- the block the selector reached.
+    (is (= [root raw] (mapv :cid (:blocks result))))
+    (is (= 2 (:blocks (:stats result))))))
+
+(deftest traversal-still-crosses-a-link-into-a-dag-cbor-leaf
+  ;; The control. If the raw test above went green because link-crossing
+  ;; stopped happening at all, this goes red with it.
+  (let [{:keys [root cbor get-fn]} (raw-fixture)
+        result (graph/resolve-path get-fn root ["cbor" "name"] limits)]
+    (is (= "cbor-leaf" (:value result)))
+    (is (= [root cbor] (mapv :cid (:blocks result))))))
+
+(deftest a-codec-this-cannot-readdress-is-still-refused-by-name
+  ;; dag-pb needs a different hash construction and a different decoder.
+  ;; Verifying it here would be guessing, so the refusal stays -- and it is a
+  ;; DIFFERENT refusal from the one raw used to get.
+  (let [pb-cid "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
+        get-fn (fn [_] #?(:clj (.getBytes "anything" "UTF-8")
+                          :cljs (.encode (js/TextEncoder.) "anything")))]
+    (is (false? (ipld/readdressable-codec? 0x70)))
+    (is (true? (ipld/readdressable-codec? 0x55)))
+    (is (true? (ipld/readdressable-codec? 0x71)))
+    (is (thrown? #?(:clj Exception :cljs :default)
+                 (ipld/get-verified-block get-fn pb-cid)))))

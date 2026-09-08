@@ -178,28 +178,65 @@
    symptom. The point is that there is now one decoder rather than two."
   [cid]
   (:codec (mf/cid->parts cid)))
+(defn readdressable-codec?
+  "Can a block under this CID be re-addressed from its own bytes here?
+
+  raw and dag-cbor can. Everything else is refused rather than guessed at,
+  because the refusal is what keeps a foreign block from being verified under
+  the wrong hash construction and reported as a mismatch."
+  [codec]
+  (contains? #{mf/codec-raw mf/codec-dag-cbor} codec))
+
 (defn get-verified-block
   "Fetch bytes at `expected-cid` and recompute their CID before returning them.
   Missing blocks return nil; a storage adapter returning different bytes under
   a CID fails closed. This is the only conforming read across a storage trust
-  boundary."
+  boundary.
+
+  The recomputation follows the codec the CID ITSELF declares. It used to
+  assume dag-cbor and throw `block codec is not dag-cbor` for anything else,
+  which made a raw block unreadable through this function -- and a raw block is
+  the ordinary shape of a byte leaf, so that refusal was not a narrow one.
+  Measured 2026-09-08 on the live `ipfs.kotobase.net/ipq/v1` surface: a
+  selector reaching a Link to a raw leaf answered HTTP 500, while the same
+  selector aimed one position left or right at a string or a number in the same
+  vector answered 200. `ipld.graph` is the traversal core under both IPQ and
+  the GraphSync adapter, so both could only ever cross links inside an
+  all-dag-cbor DAG.
+
+  A codec this cannot re-address is still refused, and by name. That is not the
+  same refusal: `dag-pb` needs a different hash construction and a different
+  decoder, so verifying it here would be guessing."
   [get-fn expected-cid]
   (when-let [bytes (get-fn expected-cid)]
-    ;; Checked before the hash comparison, because otherwise a correct raw
-    ;; block reports as a mismatch: the recomputation assumes dag-cbor.
     (let [codec (cid-codec expected-cid)]
-      (when (and codec (not= codec mf/codec-dag-cbor))
-        (throw (ex-info "ipld: block codec is not dag-cbor"
+      (when-not (readdressable-codec? codec)
+        (throw (ex-info "ipld: block codec cannot be verified here"
                         {:type :ipld/unsupported-codec
                          :cid expected-cid
-                         :codec codec}))))
-    (let [actual (cid bytes)]
-      (when-not (= expected-cid actual)
-        (throw (ex-info "ipld: block CID mismatch"
-                        {:type :ipld/cid-mismatch
-                         :expected-cid expected-cid
-                         :actual-cid actual})))
-      bytes)))
+                         :codec codec
+                         :supported #{mf/codec-raw mf/codec-dag-cbor}})))
+      (let [actual (if (= codec mf/codec-raw)
+                     (mf/cidv1-raw bytes)
+                     (cid bytes))]
+        (when-not (= expected-cid actual)
+          (throw (ex-info "ipld: block CID mismatch"
+                          {:type :ipld/cid-mismatch
+                           :expected-cid expected-cid
+                           :actual-cid actual})))
+        bytes))))
+
+(defn block->node
+  "The Data Model node a verified block represents, by its CID's codec.
+
+  A raw block IS a Bytes node -- `:bytes` is one of the Data Model kinds, and
+  there is nothing inside one to explore. Decoding it as DAG-CBOR is a category
+  error rather than a missing feature, which is why this dispatches instead of
+  widening `decode`."
+  [cid-str bytes]
+  (if (= mf/codec-raw (cid-codec cid-str))
+    bytes
+    (decode bytes)))
 
 (defn get-node
   "Fetch and decode the node at `cid-str` via `(get-fn cid) -> bytes`.
@@ -207,7 +244,7 @@
   decode; callers cannot accidentally treat a CID-keyed lookup as verification."
   [get-fn cid-str]
   (when-let [bytes (get-verified-block get-fn cid-str)]
-    (decode bytes)))
+    (block->node cid-str bytes)))
 
 #?(:cljs
    (defn get-node-async

@@ -238,7 +238,10 @@
       (when (> next-bytes max-bytes)
         (resource-limit! "ipld: selected graph exceeds byte limit"
                          :max-bytes max-bytes {}))
-      (let [node (ipld/decode bytes)]
+      ;; By the CID's own codec: a raw leaf is a Bytes node, not a DAG-CBOR
+      ;; block. `:bytes` is a Data Model kind; there is nothing inside one to
+      ;; explore, and decoding it as DAG-CBOR is a category error.
+      (let [node (ipld/block->node cid bytes)]
         {:cursor (-> cursor
                      (update :seen conj cid)
                      (assoc-in [:nodes cid] node)
@@ -319,7 +322,7 @@
                                              (update :seen conj cid)
                                              (assoc :bytes next-bytes)
                                              (update :blocks conj {:cid cid :bytes bytes}))))
-                     (ipld/decode bytes))))
+                     (ipld/block->node cid bytes))))
         root (fetch! root-cid)
         matches (selector/select-graph
                  root selector-data
