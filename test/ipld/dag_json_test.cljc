@@ -13,7 +13,7 @@
   are standard base64 without padding rather than base64url, and that
   `<`, `>` and `&` are not escaped the way Go's encoding/json escapes
   them by default."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [clojure.test :refer [deftest is testing]]
             [ipld.dag-json :as dj]
             [ipld.link :as link]))

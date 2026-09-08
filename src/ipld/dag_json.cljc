@@ -18,7 +18,7 @@
   Like `ipld.core/decode`, decoding re-encodes and refuses bytes that are
   not canonical. A codec whose job is identity cannot let two byte
   strings denote one value."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [ipld.data-model :as data-model]
             [ipld.link :as link]
             [multiformats.core :as mf]))

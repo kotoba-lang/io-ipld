@@ -4,7 +4,7 @@
   The DMT, not this parser's transient syntax state, is the public result and
   source of truth. Unsupported or malformed syntax is rejected with a token
   offset; no declaration is skipped."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             #?(:cljs [cljs.reader :as reader]
                :clj [clojure.edn :as reader])))
 

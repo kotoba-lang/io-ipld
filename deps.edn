@@ -2,7 +2,12 @@
  ;; The canonical IPLD DAG-CBOR layer: multiformats supplies CIDv1 assembly,
  ;; dag-cbor supplies canonical CBOR + generic tags (>= 9c60d58, the first
  ;; SHA with major-type-6 support); this repo owns the tag-42 link discipline.
- :deps {io.github.kotoba-lang/io-multiformats
+ :deps {
+        ;; kotoba.lang.text, not clojure.string. Pinned as an explicit floor:
+        ;; tools.deps takes the NEWEST sha it is shown, so without a floor here
+        ;; this repo silently rides whatever a sibling happens to name.
+        io.github.kotoba-lang/text {:git/sha "73bdb13ae7a3d004b44bca08be03a3191157a38f"}
+       io.github.kotoba-lang/io-multiformats
         ;; Floor, not a preference. That SHA adds `install-sha256!`, the seam a
         ;; host uses to supply its own digest. `get-verified-block` re-derives a
         ;; CID for every block a traversal touches, and the portable digest is
