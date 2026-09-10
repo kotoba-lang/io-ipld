@@ -20,6 +20,47 @@ maps them to links:
 - in application data a link is the explicit `Link` wrapper — `(link cid)`,
   `link?`, `(link-cid l)`; nothing is ever silently a link.
 
+## IPLD Patch
+
+`ipld.patch` is the six declarative operations of the
+[IPLD Patch spec](https://ipld.io/specs/patch/) -- add, replace, remove, copy,
+move, test -- applied linearly to one subject, atomically, over the Data Model.
+All eight upstream fixtures (`specs/patch/fixtures/fixtures-1.md`) are in the
+suites below, with a negative control for each.
+
+It exists **twice, on purpose**, and the two are not the same thing:
+
+| | `kotoba/ipld/patch.kotoba` | `src/ipld/patch.cljc` |
+|---|---|---|
+| role | the implementation | the oracle |
+| plane | the `:document` plane: null, bool, i64, f64, string, keyword, symbol, map, vector, list, set | the full Data Model, including `:bytes` and `:link` |
+| errors | `[:result :document :keyword]` | `ex-info` carrying `:problem` |
+| runs on | restricted ESM and wasm32-browser, measured; native refuses `[:result :document :keyword]` today | JVM and nbb |
+
+The Kotoba module is the one to change first. The `.cljc` stays until the
+Kotoba `:document` type carries bytes and links, because two refusals only it
+can express -- a path that would cross a link, and an ADL substrate reached by
+a path -- are real on this plane and unreachable on the other.
+
+Four things the spec leaves open are decided the same way in both, and the
+reasons are in the module headers: paths do not cross links, `~0`/`~1` are not
+unescaped, list indices are canonical decimal, and `move` refuses to move a
+node into its own child.
+
+    # the oracle
+    nbb --classpath "$(clojure -Spath)" run-tests.cljs
+
+    # the implementation: 8 fixtures + 9 decisions, one instance per check
+    # (fuel is 512 per instance and is not a knob)
+    node <amu>/bin/amu compile kotoba/ipld/patch_check.kotoba \
+      --source-path kotoba --unpinned --target js --jvm-free --output /tmp/check.mjs
+    node -e "import('/tmp/check.mjs').then(m=>{let t=0;for(const n of \
+      ['f1','f2','f3','f4','f5','f6','f7','f8','d1','d2','d3','d4','d5','d6','d7','d8','d9']) \
+      t+=Number(m.instantiateKotoba({})[n]());console.log('FAILURES='+t)})"
+
+`main` returns the NUMBER of failing checks rather than a boolean, because a
+boolean cannot tell one regression from a broken build.
+
 ## Use
 
 ```clojure
