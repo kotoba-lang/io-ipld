@@ -29,6 +29,7 @@
             [ipld.fbl-test]
             [ipld.graph-test]
             [ipld.link-test]
+            [ipld.patch-test]
             [ipld.schema-test]
             [ipld.selector-test]
             [ipld.value-test]
@@ -49,6 +50,7 @@
              'ipld.data-model-test
              'ipld.graph-test
              'ipld.link-test
+             'ipld.patch-test
              'ipld.schema-test
              'ipld.selector-test
              'ipld.value-test
