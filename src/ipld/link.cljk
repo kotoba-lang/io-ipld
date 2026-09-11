@@ -4,6 +4,7 @@
   Parsing or re-emitting an existing CID uses dependency-free base32 only. It
   does not load CID hashing, so canonical value consumers without storage or
   content-addressing authority need no npm hash implementation."
+  {:kotoba/export [ILink Link link link->tag link-cid link? tag->link]}
   (:require [cbor.core :as cbor]
             [kotoba.lang.text :as str]
             [multiformats.base32 :as base32]))

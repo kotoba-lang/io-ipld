@@ -5,6 +5,7 @@
   HTTP/CAR gateway. It deliberately does not define either wire protocol:
   callers receive root-first, CID-verified blocks and can frame them as CAR or
   GraphSync messages without reimplementing traversal or resource limits."
+  {:kotoba/export [advance-cursor checkpoint-cursor cursor-checkpoint-version cursor-done? cursor-result path-selector resolve-path restore-cursor select-blocks selection-cursor]}
   (:require [ipld.core :as ipld]
             [ipld.data-model :as dm]
             [ipld.link :as link]

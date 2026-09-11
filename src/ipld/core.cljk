@@ -28,6 +28,7 @@
   `links` deep-collects every Link's CID in a node — the one generic walk
   hydrate loops and GC need (kotoba-client uses it instead of knowing any
   node schema)."
+  {:kotoba/export [block->node cid cid-codec decode encode get-node get-verified-block link link->tag link-cid link? links node->block put-node! readdressable-codec? tag->link]}
   (:require [multiformats.core :as mf]
             [cbor.core :as cbor]
             [ipld.dag-json :as dag-json]
