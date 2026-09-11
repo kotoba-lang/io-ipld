@@ -50,6 +50,7 @@
   a Clojure map is unordered and DAG-CBOR fixes key order canonically at encode
   time, so map order is not observable in this Data Model. List order is
   observable, and `add` inserts exactly where the index says."
+  {:kotoba/export [apply-ops equal? operations ops-cid parse-path]}
   (:require [ipld.core :as core]
             [ipld.data-model :as dm]
             [ipld.link :as link]

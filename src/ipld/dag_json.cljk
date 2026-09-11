@@ -18,6 +18,7 @@
   Like `ipld.core/decode`, decoding re-encodes and refuses bytes that are
   not canonical. A codec whose job is identity cannot let two byte
   strings denote one value."
+  {:kotoba/export [base64-decode base64-encode cid codec decode decode-string encode encode-string node->block]}
   (:require [kotoba.lang.text :as str]
             [ipld.data-model :as data-model]
             [ipld.link :as link]

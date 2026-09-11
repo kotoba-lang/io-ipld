@@ -40,6 +40,7 @@
   `Uint8Array` on ClojureScript), matching `multiformats.core` and
   `ipld.core`. Link hashes and `Data` payloads are vectors of unsigned
   ints, matching what `protobuf.wire` reads and writes."
+  {:kotoba/export [cid codec decode encode link-schema node->block node-schema]}
   (:require [multiformats.core :as mf]
             [protobuf.wire :as pb]))
 

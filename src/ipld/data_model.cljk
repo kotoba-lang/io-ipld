@@ -4,6 +4,7 @@
   Native Clojure values are Nodes when they are one of the IPLD kinds. ADLs
   implement `INode` and therefore participate in the same lookup, path,
   traversal, and schema operations without exposing their substrate layout."
+  {:kotoba/export [INode bytes? contains-segment? entries get-in kind length lookup node? validate!]}
   (:refer-clojure :exclude [get-in bytes?])
   (:require [ipld.link :as link]))
 
