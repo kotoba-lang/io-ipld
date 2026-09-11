@@ -48,7 +48,7 @@ unescaped, list indices are canonical decimal, and `move` refuses to move a
 node into its own child.
 
     # the oracle
-    nbb --classpath "$(clojure -Spath)" run-tests.cljk
+    kbb --backend sci --classpath "$(kbb -Spath)" run-tests.cljk
 
     # the implementation: 8 fixtures + 9 decisions, one instance per check
     # (fuel is 512 per instance and is not a knob)
@@ -294,7 +294,7 @@ so the switch is a clean break, recorded in the superproject ADR.
 ## Test
 
 ```bash
-clojure -M:test                  # JVM
+kbb -M:test                  # JVM
 npm run test:nbb                 # SCI/nbb portability boundary
 npm install && npm run test:cljs # nbb + compiled ClojureScript node-test
 ```

@@ -60,7 +60,7 @@
 (deftest a-frozen-vector-pins-the-address-across-hosts
   (testing "the spec's claim is that equal values address equally ACROSS
             runtimes, which no single-runtime assertion can see. Measured
-            2026-08-21, this value addresses identically under `clojure -M` and
+            2026-08-21, this value addresses identically under `kbb -M` and
             under nbb; the literal is here so a divergence fails one suite
             rather than going unnoticed until two peers disagree."
     (is (= "bafyreia5rxqejmbvubrrqdymmboj5j3fr5us5t26qkvar3ktwixzwv6dwm"
