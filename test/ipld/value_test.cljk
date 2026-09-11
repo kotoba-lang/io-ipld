@@ -2,7 +2,7 @@
   "VC1 conformance for `kotoba.value.v1`.
 
   The hex table below is the cross-runtime contract, not a convenience: this
-  file is `.cljc` and CI runs it BOTH on the JVM (`clojure -M:test`) and as
+  file is `.cljc` and CI runs it BOTH on the JVM (`kbb -M:test`) and as
   real ClojureScript on node (`npm run test:cljs`), so a byte that differs
   between runtimes fails here rather than surfacing later as two CIDs for one
   value. `kotoba-lang/compiler:src/kotoba/compiler/artifact.cljc` records the
