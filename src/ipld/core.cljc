@@ -30,6 +30,7 @@
   node schema)."
   (:require [multiformats.core :as mf]
             [cbor.core :as cbor]
+            [ipld.dag-json :as dag-json]
             [ipld.link :as link-value]
             [ipld.data-model :as data-model]))
 
@@ -181,11 +182,29 @@
 (defn readdressable-codec?
   "Can a block under this CID be re-addressed from its own bytes here?
 
-  raw and dag-cbor can. Everything else is refused rather than guessed at,
-  because the refusal is what keeps a foreign block from being verified under
-  the wrong hash construction and reported as a mismatch."
+  The old answer was raw and dag-cbor only, on the stated ground that another
+  codec might need a different hash construction. **Measured 2026-09-11 and
+  false.** A CIDv1 is `version ++ codec ++ multihash(block bytes)`: the codec
+  is a label in the prefix and the digest is over the bytes either way, so
+  re-addressing never depended on it. Recomputing a live dag-json
+  advertisement under its own declared codec reproduces its CID exactly, and
+  under dag-cbor it does not -- which is the control that makes the first
+  statement discriminating rather than vacuous.
+
+  What genuinely depends on the codec is DECODING, and the two were refused as
+  one. That conflation had a cost outside this namespace: `ipld.graph` could
+  not cross a link into a dag-json block, so the live IPQ surface answered a
+  Cloudflare HTML 500 for a selector that reached one, and the IPNI
+  advertisement chain could not be walked past its thirteenth block
+  (`com-junkawasaki/root` ADR-2609109900).
+
+  So the set is now the codecs this namespace can turn into a Data Model node:
+  raw is bytes, dag-cbor decodes, and dag-json decodes as of the same day.
+  dag-pb stays out for a reason of its own rather than by omission -- it is
+  routinely addressed as CIDv0, which carries no codec prefix to read, and the
+  UnixFS layer above it means the node it decodes to is not the whole answer."
   [codec]
-  (contains? #{mf/codec-raw mf/codec-dag-cbor} codec))
+  (contains? #{mf/codec-raw mf/codec-dag-cbor dag-json/codec} codec))
 
 (defn get-verified-block
   "Fetch bytes at `expected-cid` and recompute their CID before returning them.
@@ -216,9 +235,11 @@
                          :cid expected-cid
                          :codec codec
                          :supported #{mf/codec-raw mf/codec-dag-cbor}})))
-      (let [actual (if (= codec mf/codec-raw)
-                     (mf/cidv1-raw bytes)
-                     (cid bytes))]
+      ;; One line for every codec, because re-addressing is the same
+      ;; construction for all of them. The `if` this replaces named two codecs
+      ;; and would have had to name a third; naming the DECLARED codec instead
+      ;; is what the CID already says.
+      (let [actual (mf/cidv1 codec (mf/multihash-sha256 bytes))]
         (when-not (= expected-cid actual)
           (throw (ex-info "ipld: block CID mismatch"
                           {:type :ipld/cid-mismatch
@@ -234,9 +255,11 @@
   error rather than a missing feature, which is why this dispatches instead of
   widening `decode`."
   [cid-str bytes]
-  (if (= mf/codec-raw (cid-codec cid-str))
-    bytes
-    (decode bytes)))
+  (let [codec (cid-codec cid-str)]
+    (cond
+      (= mf/codec-raw codec) bytes
+      (= dag-json/codec codec) (dag-json/decode bytes)
+      :else (decode bytes))))
 
 (defn get-node
   "Fetch and decode the node at `cid-str` via `(get-fn cid) -> bytes`.

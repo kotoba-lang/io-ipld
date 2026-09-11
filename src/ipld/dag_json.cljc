@@ -147,6 +147,232 @@
   [bytes]
   (mf/cidv1 codec (mf/multihash-sha256 bytes)))
 
+
+;; ── decoding ────────────────────────────────────────────────────────────────
+;;
+;; This half was promised by the namespace docstring above and did not exist,
+;; and the gap had a cost outside this repository. `ipld.core/readdressable-
+;; codec?` refused dag-json, `ipld.graph` therefore could not cross a link into
+;; one, and the live `ipfs.kotobase.net/ipq/v1` surface answered a Cloudflare
+;; HTML 500 for a selector that reached the fourteenth advertisement in the
+;; IPNI chain -- which is dag-json (root ADR-2609109900, 2026-09-10).
+;;
+;; The reason given for that refusal was that a foreign codec might need a
+;; different hash construction. Measured 2026-09-11 against that very block:
+;; it does not. A CIDv1 is `version ++ codec ++ multihash(block bytes)`, so
+;; the codec is a label in the prefix and the digest is over the bytes either
+;; way. Re-addressing never depended on the codec. DECODING does, and the two
+;; were being refused as one.
+;;
+;; The parser below is deliberately strict, and it can afford to be: `decode`
+;; re-encodes what it read and refuses any disagreement, so anything outside
+;; the canonical form is rejected by the round trip rather than by the scanner
+;; having to be lenient and then argue about it.
+
+(defn- ->bytes
+  "The host's byte container for a sequence of byte values."
+  [v]
+  #?(:clj (byte-array (map unchecked-byte v))
+     :cljs (js/Uint8Array.from (clj->js (vec v)))))
+
+(defn- code-at
+  "The code point at `i`. ClojureScript has no character type and the JVM's
+  `.charAt` returns one, so neither `nth` nor `int` reads the same on both."
+  [s i]
+  #?(:clj (int (.charAt ^String s i))
+     :cljs (.charCodeAt s i)))
+
+(defn- at
+  "The one-character string at `i`, which IS what `subs` yields on both hosts."
+  [s i]
+  (subs s i (inc i)))
+
+(defn- fail! [reason detail]
+  (throw (ex-info (str "dag-json: " (name reason))
+                  (merge {:type :ipld/invalid-dag-json :reason reason} detail))))
+
+(defn- expect! [s i ch]
+  (when (or (>= i (count s)) (not= ch (at s i)))
+    (fail! :expected {:expected ch :at i}))
+  (inc i))
+
+(defn- from-code-point [n]
+  #?(:clj (str (char n)) :cljs (js/String.fromCharCode n)))
+
+(defn- read-hex4 [s i]
+  (let [t (subs s i (+ i 4))]
+    (when-not (= 4 (count t)) (fail! :truncated-escape {:at i}))
+    (reduce (fn [acc k]
+              (let [c (code-at t k)
+                    d (cond (and (>= c 48) (<= c 57)) (- c 48)
+                            (and (>= c 97) (<= c 102)) (- c 87)
+                            (and (>= c 65) (<= c 70)) (- c 55)
+                            :else (fail! :bad-escape-digit {:at (+ i k)}))]
+                (+ (* acc 16) d)))
+            0 (range 4))))
+
+(defn- read-string*
+  "A JSON string starting at the opening quote. Returns `[value next-index]`."
+  [s i]
+  (let [i (expect! s i "\"")]
+    (loop [i i out []]
+      (when (>= i (count s)) (fail! :unterminated-string {:at i}))
+      (let [ch (at s i)]
+        (cond
+          (= ch "\"") [(apply str out) (inc i)]
+          (= ch "\\")
+          (let [e (at s (inc i))]
+            (case e
+              "\"" (recur (+ i 2) (conj out "\""))
+              "\\" (recur (+ i 2) (conj out "\\"))
+              "/" (recur (+ i 2) (conj out "/"))
+              "b" (recur (+ i 2) (conj out (from-code-point 8)))
+              "f" (recur (+ i 2) (conj out (from-code-point 12)))
+              "n" (recur (+ i 2) (conj out "\n"))
+              "r" (recur (+ i 2) (conj out "\r"))
+              "t" (recur (+ i 2) (conj out "\t"))
+              "u" (recur (+ i 6) (conj out (from-code-point (read-hex4 s (+ i 2)))))
+              (fail! :unknown-escape {:escape e :at i})))
+          :else (recur (inc i) (conj out ch)))))))
+
+(defn- number-token [s i]
+  (loop [j i]
+    (if (and (< j (count s))
+             (let [c (code-at s j)]
+               (or (and (>= c 48) (<= c 57))       ; 0-9
+                   (= c 45) (= c 43)               ; - +
+                   (= c 46)                        ; .
+                   (= c 101) (= c 69))))           ; e E
+      (recur (inc j))
+      (subs s i j))))
+
+(defn- read-number [s i]
+  (let [t (number-token s i)]
+    (when (empty? t) (fail! :not-a-number {:at i}))
+    ;; Floats are refused on the way IN because they are refused on the way
+    ;; OUT: `write` throws for `:float`, so accepting one here would produce a
+    ;; value this namespace cannot re-encode, and `decode`'s round trip would
+    ;; then report a canonicality failure for what is really an unsupported
+    ;; kind. Naming it here keeps the two answers apart.
+    (when (or (str/includes? t ".") (str/includes? t "e") (str/includes? t "E"))
+      (fail! :float-not-supported {:token t}))
+    (let [n #?(:clj (try (Long/parseLong t)
+                         ;; Past Long range the JVM throws an unnamed
+                         ;; NumberFormatException; ClojureScript's parseInt
+                         ;; silently loses precision instead. Both are the
+                         ;; same refusal and get the same name -- caught by
+                         ;; the JVM suite, where the first version let the
+                         ;; raw exception through with no :reason at all.
+                         (catch NumberFormatException _
+                           (fail! :integer-not-representable {:token t})))
+               :cljs (js/parseInt t 10))]
+      ;; The guard that matters on ClojureScript, where integers past 2^53 are
+      ;; not representable: if the parse does not print back as the token it
+      ;; came from, the value is not the one on the wire.
+      (when-not (= t (str n)) (fail! :integer-not-representable {:token t}))
+      [n (+ i (count t))])))
+
+(declare read-value)
+
+(defn- read-list [s i]
+  (let [i (expect! s i "[")]
+    (if (= "]" (at s i))
+      [[] (inc i)]
+      (loop [i i out []]
+        (let [[v i] (read-value s i)
+              out (conj out v)]
+          (case (at s i)
+            "," (recur (inc i) out)
+            "]" [out (inc i)]
+            (fail! :expected-comma-or-close {:at i})))))))
+
+(defn- read-map-entries [s i]
+  (if (= "}" (at s i))
+    [[] (inc i)]
+    (loop [i i out []]
+      (let [[k i] (read-string* s i)
+            i (expect! s i ":")
+            [v i] (read-value s i)
+            out (conj out [k v])]
+        (case (at s i)
+          "," (recur (inc i) out)
+          "}" [out (inc i)]
+          (fail! :expected-comma-or-close {:at i}))))))
+
+(defn- link-or-bytes
+  "The two reserved shapes. A one-entry map whose key is `/` is never an
+  ordinary map in DAG-JSON: a string value is a link and a `{bytes: …}` value
+  is a byte string. Anything else under that key is refused rather than passed
+  through as data, because passing it through would give one JSON document two
+  readings."
+  [entries at-index]
+  (let [[[_ v]] entries]
+    (cond
+      (string? v) (link/link v)
+      (and (map? v) (= 1 (count v)) (contains? v "bytes"))
+      (let [b (get v "bytes")]
+        (when-not (string? b) (fail! :bytes-not-a-string {:at at-index}))
+        ;; `base64-decode` hands back a VECTOR of byte values, which
+        ;; `data-model/kind` reads as a `:list` -- so a byte string decoded
+        ;; without this conversion re-encodes as a JSON array of numbers.
+        ;; Caught by the round trip on the first live block: 652 bytes in,
+        ;; 1,039 out. The round trip is the only reason that was a refusal
+        ;; instead of a silently different document.
+        (->bytes (base64-decode b)))
+      :else (fail! :reserved-key {:at at-index}))))
+
+(defn- read-object [s i]
+  (let [start i
+        i (expect! s i "{")
+        [entries i] (read-map-entries s i)]
+    (if (and (= 1 (count entries)) (= "/" (ffirst entries)))
+      [(link-or-bytes entries start) i]
+      [(into {} entries) i])))
+
+(defn- read-value [s i]
+  (when (>= i (count s)) (fail! :unexpected-end {:at i}))
+  (let [ch (at s i)]
+    (cond
+      (= ch "{") (read-object s i)
+      (= ch "[") (read-list s i)
+      (= ch "\"") (read-string* s i)
+      (= ch "t") (if (= "true" (subs s i (min (count s) (+ i 4))))
+                   [true (+ i 4)] (fail! :bad-literal {:at i}))
+      (= ch "f") (if (= "false" (subs s i (min (count s) (+ i 5))))
+                   [false (+ i 5)] (fail! :bad-literal {:at i}))
+      (= ch "n") (if (= "null" (subs s i (min (count s) (+ i 4))))
+                   [nil (+ i 4)] (fail! :bad-literal {:at i}))
+      :else (read-number s i))))
+
+(defn decode-string
+  "The Data Model node denoted by canonical DAG-JSON text.
+
+  Strict: no insignificant whitespace is accepted anywhere, because none
+  appears in the canonical form and accepting it would let two texts denote
+  one value through this function -- which is the property `decode` exists to
+  deny."
+  [s]
+  (let [[v i] (read-value s 0)]
+    (when (not= i (count s)) (fail! :trailing-bytes {:at i}))
+    v))
+
+(defn decode
+  "The Data Model node for canonical DAG-JSON `bytes`, re-encoded and compared.
+
+  A codec whose job is identity cannot let two byte strings denote one value,
+  so this refuses anything that does not round-trip. That check is what lets
+  the scanner above be strict instead of forgiving: the canonical form is the
+  only accepted input, and it is enforced here rather than argued about in
+  each read function."
+  [bytes]
+  (let [text #?(:clj (String. ^bytes (byte-array (byte-seq bytes)) "UTF-8")
+                :cljs (.decode (js/TextDecoder.) bytes))
+        node (decode-string text)
+        re (encode-string node)]
+    (when-not (= re text)
+      (fail! :not-canonical {:encoded-length (count re) :input-length (count text)}))
+    node))
+
 (defn node->block
   "Encode `node` and address it: `{:cid <string> :bytes <bytes>}`."
   [node]

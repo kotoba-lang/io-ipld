@@ -139,6 +139,31 @@ bytes hash to the CID it is served under — which makes those bytes the
 canonical form by definition. The fixture is built in go-libipni's schema
 field order, so an encoder that kept insertion order would fail it.
 
+It decodes too, since 2026-09-11, and the decoder is pinned to the same bytes
+the hard way: read the served text, write it back, and require the bytes to
+be equal and the CID to be the one it was served under.
+
+```clojure
+(dag-json/decode served-bytes)
+;; => {"Addresses" [...] "PreviousID" #ipld.link.Link{...} "IsRm" false ...}
+;; a `{"/": "bafy…"}` comes back as a Link and a `{"/": {"bytes": …}}` as bytes,
+;; never as maps; anything that does not re-encode to the input is refused
+;; as :not-canonical, a float as :float-not-supported, and an integer this
+;; host cannot hold as :integer-not-representable
+```
+
+What that unlocks one layer up: `ipld.core/readdressable-codec?` now admits
+dag-json, and `ipld.graph` crosses a link into a dag-json block. The refusal
+it replaces was not about hashing — a CIDv1 is `version ++ codec ++
+multihash(bytes)` for every codec, and recomputing a live dag-json block under
+its own codec reproduces its CID (measured; under dag-cbor it does not). It
+was about decoding, and the two had been refused as one. The cost of that was
+measurable outside this repository: the live IPQ surface answered a
+Cloudflare HTML 500 for a selector that reached a dag-json advertisement, and
+the IPNI chain could not be walked past its thirteenth block
+(`com-junkawasaki/root` ADR-2609109900). dag-pb is still out, for its own
+reason: it is routinely addressed as CIDv0, which has no codec prefix to read.
+
 ## IPLD layers
 
 This repository now keeps IPLD's layers distinct instead of treating CBOR as
