@@ -30,7 +30,7 @@ suites below, with a negative control for each.
 
 It exists **twice, on purpose**, and the two are not the same thing:
 
-| | `kotoba/ipld/patch.kotoba` | `src/ipld/patch.cljc` |
+| | `kotoba/ipld/patch.kotoba` | `src/ipld/patch.cljk` |
 |---|---|---|
 | role | the implementation | the oracle |
 | plane | the `:document` plane: null, bool, i64, f64, string, keyword, symbol, map, vector, list, set | the full Data Model, including `:bytes` and `:link` |
@@ -48,7 +48,7 @@ unescaped, list indices are canonical decimal, and `move` refuses to move a
 node into its own child.
 
     # the oracle
-    nbb --classpath "$(clojure -Spath)" run-tests.cljs
+    nbb --classpath "$(clojure -Spath)" run-tests.cljk
 
     # the implementation: 8 fixtures + 9 decisions, one instance per check
     # (fuel is 512 per instance and is not a knob)

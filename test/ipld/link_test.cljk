@@ -22,7 +22,7 @@
 ;; repo's consumers actually broke: `link-cid` returned nil, so `link->tag`
 ;; threw on `(subs nil 1)` and no node containing a link could be encoded.
 ;;
-;; `run-tests.cljs` exists so this is checked on that runtime rather than
+;; `run-tests.cljk` exists so this is checked on that runtime rather than
 ;; assumed from the one where it cannot fail.
 
 (deftest link-cid-does-not-depend-on-field-access

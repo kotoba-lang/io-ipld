@@ -2,8 +2,8 @@
   "name": "ipld",
   "private": true,
   "scripts": {
-    "test:nbb": "nbb --classpath \"$(clojure -Spath)\" run-tests.cljs",
-    "test:cljs": "npm run test:nbb && nbb gen-shadow-cljs-edn.cljs && shadow-cljs compile test && node out/test.js"
+    "test:nbb": "nbb --classpath \"$(clojure -Spath)\" run-tests.cljk",
+    "test:cljs": "npm run test:nbb && nbb gen-shadow-cljs-edn.cljk && shadow-cljs compile test && node out/test.js"
   },
   "devDependencies": {
     "nbb": "^1.4.208",
