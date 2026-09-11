@@ -15,8 +15,12 @@
   them by default."
   (:require [kotoba.lang.text :as str]
             [clojure.test :refer [deftest is testing]]
+            [ipld.core :as ipld]
             [ipld.dag-json :as dj]
-            [ipld.link :as link]))
+            [ipld.data-model :as data-model]
+            [ipld.graph :as graph]
+            [ipld.link :as link]
+            [multiformats.core :as mf]))
 
 (def served
   (str "{\"Addresses\":[\"/ip4/157.148.101.187/tcp/58419\"],\"ContextID\":{\"/\":{\"bytes\":\"\"}},"
@@ -110,3 +114,140 @@
     (is (= "{\"/\":\"bafkqaaa\"}" (dj/encode-string (link/link "bafkqaaa"))))
     (is (not= (dj/encode-string (link/link "bafkqaaa"))
               (dj/encode-string "bafkqaaa")))))
+
+;; ── decoding ─────────────────────────────────────────────────────────────────
+;;
+;; The encoder above is pinned to bytes this repository did not produce. The
+;; decoder is pinned to the same ones, and the check is the strongest available
+;; for a codec whose job is identity: read the served text, write it back, and
+;; require the bytes to be equal and the CID to be the one it was served under.
+;; Nothing in this repository can make that agree by construction.
+
+(defn- text->bytes [s]
+  #?(:clj (.getBytes ^String s "UTF-8")
+     :cljs (.encode (js/TextEncoder.) s)))
+
+(defn- byte-vec [b]
+  #?(:clj (vec b) :cljs (vec (array-seq b))))
+
+(deftest the-served-advertisement-round-trips-to-the-same-bytes
+  (let [bytes (text->bytes served)
+        node (dj/decode bytes)
+        re (dj/encode node)]
+    (is (= (byte-vec bytes) (byte-vec re))
+        "byte-identical, not merely equal as values")
+    (is (= served-cid (dj/cid re))
+        "and it re-addresses to the CID it was served under")))
+
+(deftest the-reserved-shapes-decode-to-their-kinds-and-not-to-maps
+  (let [node (dj/decode (text->bytes served))]
+    (is (= :link (data-model/kind (get node "PreviousID")))
+        "a one-entry / map whose value is a string is a Link, not a map")
+    (is (= :bytes (data-model/kind (get-in node ["ContextID"])))
+        "and one whose value is {bytes: …} is a byte string, not a nested map")
+    (is (= :link (data-model/kind (get node "Entries"))))
+    (is (= :string (data-model/kind (get node "Provider"))))
+    (is (false? (get node "IsRm")))))
+
+(deftest non-canonical-input-is-refused-rather-than-accepted
+  ;; The property the namespace claims: two byte strings may not denote one
+  ;; value through this codec. Both mutations below are valid JSON for the
+  ;; same value and neither is the canonical form.
+  (testing "insignificant whitespace -- refused by the scanner, before the round trip"
+    (let [spaced (str/replace served "\"IsRm\":false" "\"IsRm\": false")]
+      (is (not= spaced served) "the mutation actually changed the input")
+      ;; `:not-a-number` rather than `:not-canonical`, and the distinction is
+      ;; worth pinning: the scanner is strict, so a space after a colon is
+      ;; refused where it is read instead of being parsed and then caught by
+      ;; re-encoding. Both are refusals; only one of them names the position.
+      (is (= :not-a-number
+             (try (dj/decode (text->bytes spaced)) nil
+                  (catch #?(:clj Exception :cljs :default) e
+                    (:reason (ex-data e))))))))
+  (testing "keys out of bytewise order -- refused by the round trip"
+    (let [swapped (str/replace served
+                               "\"IsRm\":false,\"Metadata\""
+                               "\"Metadata\":false,\"IsRm\"")]
+      (is (not= swapped served))
+      ;; This one IS valid JSON in reading order and the scanner has no
+      ;; complaint; it is the re-encode that puts the keys back in bytewise
+      ;; order and finds the input disagreeing. This is the case that the
+      ;; round trip exists for.
+      (is (= :not-canonical
+             (try (dj/decode (text->bytes swapped)) nil
+                  (catch #?(:clj Exception :cljs :default) e
+                    (:reason (ex-data e)))))))))
+
+(deftest the-canonical-input-is-accepted
+  ;; The control for the two above. If `decode` refused everything they would
+  ;; both pass and mean nothing.
+  (is (map? (dj/decode (text->bytes served)))))
+
+(deftest a-float-is-refused-by-its-own-name
+  ;; Not `:not-canonical`. The encoder cannot write a float, so a float read
+  ;; here would fail the round trip and be reported as a canonicality problem,
+  ;; which would send a reader looking for the wrong thing.
+  (is (= :float-not-supported
+         (try (dj/decode (text->bytes "{\"a\":1.5}")) nil
+              (catch #?(:clj Exception :cljs :default) e
+                (:reason (ex-data e)))))))
+
+(deftest an-integer-this-host-cannot-represent-is-refused
+  ;; ClojureScript has no integers past 2^53. Accepting one would hand back a
+  ;; value that is not the one on the wire, and the round trip would then
+  ;; disagree for a reason that has nothing to do with canonicality.
+  (let [reason (try (dj/decode (text->bytes "{\"a\":123456789012345678901}")) nil
+                    (catch #?(:clj Exception :cljs :default) e
+                      (:reason (ex-data e))))]
+    (is (= :integer-not-representable reason)
+        "named the same on both hosts: the JVM overflows a Long, ClojureScript loses precision, and neither is silently rounded")))
+
+;; ── what the decoder unlocks, one layer up ───────────────────────────────────
+
+(deftest a-dag-json-block-verifies-under-its-own-codec
+  (let [bytes (text->bytes served)
+        store {served-cid bytes}]
+    (is (true? (ipld/readdressable-codec? dj/codec)))
+    (is (= (byte-vec bytes)
+           (byte-vec (ipld/get-verified-block store served-cid)))
+        "re-addressing is the same construction for every codec")
+    (is (= :map (data-model/kind (ipld/block->node served-cid bytes)))
+        "and block->node returns the decoded node rather than raw bytes")))
+
+(deftest a-tampered-dag-json-block-is-still-a-mismatch
+  ;; The control for the test above. Verification has to be able to say no, or
+  ;; admitting the codec would have replaced a refusal with a rubber stamp.
+  (let [bytes (text->bytes served)
+        broken (text->bytes (str/replace served "\"IsRm\":false" "\"IsRm\":true"))
+        store {served-cid broken}]
+    (is (not= (byte-vec bytes) (byte-vec broken)))
+    (is (= :ipld/cid-mismatch
+           (try (ipld/get-verified-block store served-cid) nil
+                (catch #?(:clj Exception :cljs :default) e
+                  (:type (ex-data e))))))))
+
+(deftest a-traversal-crosses-a-link-into-a-dag-json-block
+  ;; The ceiling this decoder exists to lift. Before it, `ipld.graph` refused
+  ;; the link and the live IPQ surface answered 500 for exactly this shape.
+  (let [store (atom {})
+        put! (fn [cid b] (swap! store assoc cid b))
+        json-bytes (text->bytes served)
+        json-cid (dj/cid json-bytes)
+        _ (put! json-cid json-bytes)
+        root (ipld/put-node! put! {"ad" (ipld/link json-cid) "n" 1})
+        get-fn (fn [cid] (get @store cid))
+        result (graph/select-blocks get-fn root
+                                    (graph/path-selector ["ad" "Provider"])
+                                    {:max-blocks 16 :max-bytes 100000
+                                     :max-depth 8 :max-matches 8})]
+    (is (= 2 (count (:blocks result))) "root and the dag-json block")
+    (is (= ["12D3KooWMipNxukQPsg76mfxKK7XEcchThK3n974z7tbbyYBY9tP"]
+           (mapv :value (:matches result)))
+        "and a field INSIDE the dag-json block is what came back")))
+
+(deftest a-codec-with-no-decoder-here-is-still-refused
+  ;; The control for the widening. `readdressable-codec?` was not opened up to
+  ;; everything -- dag-pb has a decoder in this repo and is still out, for the
+  ;; reason its docstring gives.
+  (is (false? (ipld/readdressable-codec? 0x70)) "dag-pb")
+  (is (false? (ipld/readdressable-codec? 0x0200)) "an unassigned codec"))
