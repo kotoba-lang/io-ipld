@@ -138,7 +138,7 @@
     ;; not because the codec was wrong (it rejects a real -0.0 on both
     ;; runtimes) but because the test could not construct one there.
     ;;
-    ;; It had never been noticed: `run-tests.cljs` named three of the ten
+    ;; It had never been noticed: `run-tests.cljk` named three of the ten
     ;; `.cljc` suites, and this was not one of them.
     (let [negative-zero (- 0.0)]
       (is (neg? (/ 1.0 negative-zero))
