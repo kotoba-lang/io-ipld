@@ -894,7 +894,17 @@
     (catch #?(:clj Exception :cljs :default) error
       (fail! :adl-capability-failed
              {:adl name :operation operation :path path
-              :message #?(:clj (.getMessage error) :cljs (.-message error))}))))
+              ;; 2026-09-12, adr-2609111900: the `:default` clause below exists so the
+              ;; Kotoba reader, whose only feature is `:kotoba`, reads this file. A
+              ;; `#?(:clj a :cljs b)` with no matching feature reads as NOTHING, which in a
+              ;; map-value position leaves the map with an odd number of forms, so the whole
+              ;; file was refused at read time ("map literal must contain an even number of
+              ;; forms") -- in a dependency, so every dependant stopped here. With `:default`
+              ;; the reader reads the file and refuses the `:cljs` form by NAME later, in the
+              ;; module that uses it. It changes nothing on clj/cljs: Clojure still picks
+              ;; `:clj`, ClojureScript/nbb still picks `:cljs` (first match).
+              :message #?(:clj (.getMessage error) :cljs (.-message error)
+                          :default (.-message error))}))))
 
 (def ^:private wasm-header [0 97 115 109 1 0 0 0])
 
