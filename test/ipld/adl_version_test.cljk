@@ -32,7 +32,9 @@
 
 (defn- capability [version]
   (cond-> {:validate-representation (fn [_] true)
-           :decode (fn [v] v)}
+           :decode (fn [v] v)
+           :encode (fn [v] v)
+           :validate-logical (fn [_] true)}
     version (assoc :version version)))
 
 ;; ── declaring a version ──────────────────────────────────────────────────────
@@ -96,6 +98,25 @@
       (is (nil? (err #(sch/unify! c "MyBytes" "x"
                                   (assoc limits :adl-capabilities
                                          {"Packed" (capability nil)}))))))))
+
+(deftest representation-and-logical-projections-enforce-the-same-version
+  ;; `unify!` is not the decode/encode path. Before this regression test, only
+  ;; that validator called require-adl-versions!, so a v2 capability silently
+  ;; decoded and encoded a schema that declared v1.
+  (let [c (sch/compile-schema (dmt {"Packed" {"version" 1}}))
+        mismatched (assoc limits :adl-capabilities {"Packed" (capability 2)})]
+    (is (= :adl-version-mismatch
+           (err #(sch/representation->logical! c "MyBytes" "x" mismatched))))
+    (is (= :adl-version-mismatch
+           (err #(sch/logical->representation! c "MyBytes" "x" mismatched))))))
+
+(deftest representation-and-logical-projections-accept-the-declared-version
+  (let [c (sch/compile-schema (dmt {"Packed" {"version" 1}}))
+        matched (assoc limits :adl-capabilities {"Packed" (capability 1)})]
+    (is (= "x" (:logical-value
+                 (sch/representation->logical! c "MyBytes" "x" matched))))
+    (is (= "x" (:value
+                 (sch/logical->representation! c "MyBytes" "x" matched))))))
 
 (deftest the_check_is_reachable_through_the_legacy_validator_path
   ;; `:adl-validators` is folded into capabilities, so it must be checked too
