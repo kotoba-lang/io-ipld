@@ -1,6 +1,6 @@
 (ns ipld.data-model-test
   (:refer-clojure :exclude [get-in])
-  (:require #?(:clj [clojure.test :refer [deftest is testing]]
+  (:require #?(:clj [kotoba.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
             [ipld.data-model :as dm]
             [ipld.core :as ipld]))

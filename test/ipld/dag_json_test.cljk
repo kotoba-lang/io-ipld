@@ -14,7 +14,7 @@
   `<`, `>` and `&` are not escaped the way Go's encoding/json escapes
   them by default."
   (:require [kotoba.lang.text :as str]
-            [clojure.test :refer [deftest is testing]]
+            [kotoba.test :refer [deftest is testing]]
             [ipld.core :as ipld]
             [ipld.dag-json :as dj]
             [ipld.data-model :as data-model]

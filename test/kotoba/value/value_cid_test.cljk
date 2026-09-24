@@ -3,7 +3,7 @@
 
   A separate file rather than additions to `codec_test.cljc`, so that a working
   copy holding its own changes to that file still applies."
-  (:require #?(:clj  [clojure.test :refer [deftest is testing]]
+  (:require #?(:clj  [kotoba.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
             [kotoba.lang.text]
             [kotoba.value.codec :as codec]

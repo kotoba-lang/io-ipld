@@ -6,7 +6,7 @@
   storage, handed back. Both halves matter and they fail differently: a resume
   that returns a different result is a bug you can see, while a resume that
   returns a confident result for a graph nobody asked for is not."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [ipld.core :as ipld]
             [ipld.graph :as graph]
             [ipld.link :as link]

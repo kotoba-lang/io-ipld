@@ -6,7 +6,7 @@
   that something was thrown: a negative test that only requires an exception
   passes when the code fails for an unrelated reason, which is how a refusal
   that has stopped working reads as a refusal that still works."
-  (:require #?(:clj [clojure.test :refer [deftest is testing]]
+  (:require #?(:clj [kotoba.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
             [ipld.core :as ipld]
             [ipld.data-model :as dm]

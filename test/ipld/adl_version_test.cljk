@@ -11,7 +11,7 @@
   Measured 2026-09-06 before this existed: `advanced` entries had to be exactly
   `{}`, so a version could not be written down at all, and a v1 reader against
   v2 data was indistinguishable from a correct pair."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [ipld.schema :as sch]))
 
 (defn- err [f]

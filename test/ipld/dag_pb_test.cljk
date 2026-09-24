@@ -10,7 +10,7 @@
   from a codec — this workspace already shipped a UnixFS implementation
   that transposed `Links` and `Data`, passed every test, and could not read
   a block written by anything else."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [ipld.dag-pb :as dag-pb]
             [multiformats.core :as mf]))
 

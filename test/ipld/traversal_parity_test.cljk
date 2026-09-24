@@ -15,7 +15,7 @@
   answer differently for the same selector, and nothing would say so.
 
   These are the assertions that would notice."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [ipld.core :as ipld]
             [ipld.graph :as graph]
             [ipld.link :as link]))
