@@ -8,7 +8,7 @@
   value. `kotoba-lang/compiler:src/kotoba/compiler/artifact.cljc` records the
   live incident this guards against — the same KIR hashing differently on JVM
   and nbb because `pr-str` rendered a bigint differently."
-  (:require #?(:clj [clojure.test :refer [deftest is testing]]
+  (:require #?(:clj [kotoba.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
             [ipld.core :as ipld]
             [ipld.value :as v]

@@ -4,7 +4,7 @@
   An ADL is untrusted guest code standing between a representation and the
   logical value a CID is supposed to determine. These are the ways that
   relationship can be broken, and what the schema does about each."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [ipld.core :as core]
             [ipld.schema :as schema]
             [ipld.schema-dsl :as dsl]

@@ -10,7 +10,7 @@
   updating the table fails too."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.test :refer [deftest is testing]]
+            [kotoba.test :refer [deftest is testing]]
             [ipld.core :as core]
             [multiformats.core :as mf]
             [ipld.schema :as schema]

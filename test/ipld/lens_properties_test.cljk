@@ -6,7 +6,7 @@
   representation to its logical form and encoding it back must return the
   representation you started from. A lens that loses information passes any
   single-direction test and still corrupts data."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [ipld.schema :as schema]
             [ipld.schema-dsl :as dsl]))
 

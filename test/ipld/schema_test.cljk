@@ -1,5 +1,5 @@
 (ns ipld.schema-test
-  (:require #?(:clj [clojure.test :refer [deftest is]]
+  (:require #?(:clj [kotoba.test :refer [deftest is]]
                :cljs [cljs.test :refer [deftest is] :include-macros true])
             [ipld.schema :as schema]
             [ipld.schema-dsl :as dsl]

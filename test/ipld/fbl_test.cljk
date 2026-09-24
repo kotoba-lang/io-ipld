@@ -7,7 +7,7 @@
   original. A layout bug is almost never wrong for all ranges -- it is wrong
   at a chunk boundary, or for a range that starts inside one leaf and ends
   inside another, and a handful of hand-picked cases miss exactly those."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [ipld.core :as ipld]
             [ipld.fbl :as fbl]
             [ipld.link :as link]))

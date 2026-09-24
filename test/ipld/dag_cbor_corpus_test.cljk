@@ -9,7 +9,7 @@
   measured, which is why it is here rather than in prose."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.test :refer [deftest is testing]]
+            [kotoba.test :refer [deftest is testing]]
             [ipld.core :as core]
             [ipld.link :as link]))
 

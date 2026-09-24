@@ -8,7 +8,7 @@
   later implements one, this fails until the decision is revisited on purpose."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.test :refer [deftest is testing]]
+            [kotoba.test :refer [deftest is testing]]
             [ipld.selector :as selector]))
 
 (def coverage (-> "ipld/selector-coverage.edn" io/resource slurp edn/read-string))

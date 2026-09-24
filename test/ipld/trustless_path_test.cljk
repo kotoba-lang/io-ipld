@@ -4,7 +4,7 @@
   A trustless path is a claim -- \"this value is at this path under this root\"
   -- plus the blocks needed to check it. Each vector below is one way that
   claim can be wrong, and the answer that separates it from the others."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [ipld.core :as ipld]
             [ipld.graph :as graph]
             [ipld.link :as link]
