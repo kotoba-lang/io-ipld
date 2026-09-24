@@ -82,7 +82,11 @@
   "Length of a byte container, without materialising it as a vector."
   [value]
   #?(:clj  (if (bytes? value) (alength ^bytes value) (count (byte-vector value)))
-     :cljs (if (number? (.-length value)) (.-length value) (count value))))
+     :cljs (if (number? (.-length value)) (.-length value) (count value))
+     ;; Kotoba: a byte container is a vector of integers, so its length is
+     ;; `count`. Without a :default clause the Kotoba reader (features
+     ;; #{:kotoba}) read this body as nothing (adr-2609111900).
+     :default (count value)))
 
 (defn- same-bytes?
   "Whether two byte containers hold the same unsigned bytes.
