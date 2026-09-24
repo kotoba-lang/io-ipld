@@ -5,7 +5,7 @@
   named references; `valid?`/`unify!` then match plain IPLD Data Model values
   without changing their content identity."
   {:kotoba/export [adl-operations adl-wasm-abi advanced-version compile-schema logical->representation! prelude representation->logical! require-adl-versions! require-unify supported-kinds unify unify! union-kinds valid? wasm-adl-capability]}
-  (:require [clojure.set :as set]
+  (:require [kotoba.lang.coll :as set]
             [kotoba.lang.text :as str]
             [ipld.data-model :as dm]
             [ipld.link :as link]
