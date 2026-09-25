@@ -6,7 +6,7 @@
   storage, handed back. Both halves matter and they fail differently: a resume
   that returns a different result is a bug you can see, while a resume that
   returns a confident result for a graph nobody asked for is not."
-  (:require [kotoba.test :refer [deftest is testing]]
+  (:require [kotoba.lang.error :as kerror] [kotoba.test :refer [deftest is testing]]
             [ipld.core :as ipld]
             [ipld.graph :as graph]
             [ipld.link :as link]
@@ -52,7 +52,7 @@
                (try (do (graph/restore-cursor
                          (value/encode-value (assoc-in envelope path v)))
                         nil)
-                    (catch clojure.lang.ExceptionInfo e (:problem (ex-data e)))))]
+                    (catch kerror/ExceptionInfo e (:problem (ex-data e)))))]
     (testing "an unedited checkpoint still restores"
       (is (some? (graph/restore-cursor bytes))))
     (testing "swapping the root would resume against a graph nobody asked for"
@@ -83,4 +83,4 @@
                                    (assoc :checkpoint/version 1)))]
     (is (= :ipld/invalid-checkpoint
            (try (do (graph/restore-cursor v1) nil)
-                (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))))
+                (catch kerror/ExceptionInfo e (:type (ex-data e))))))))

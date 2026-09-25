@@ -1,5 +1,5 @@
 (ns kotoba.value.codec-test
-  (:require #?(:clj [kotoba.test :refer [deftest is testing]]
+  (:require [kotoba.lang.error :as kerror] #?(:clj [kotoba.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
             [ipld.value :as implementation]
             [kotoba.value.codec :as codec]))
@@ -57,7 +57,7 @@
       (try
         (f)
         (is false (str direction " must reject an oversized boundary"))
-        (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
+        (catch kerror/ExceptionInfo e
           (is (= :value/max-bytes-exceeded (:problem (ex-data e))))
           (is (= direction (:direction (ex-data e))))
           (is (= size (:bytes (ex-data e)))))))))
@@ -67,10 +67,10 @@
     (try
       (codec/encode-bounded :ok limit)
       (is false (str "must reject limit " limit))
-      (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
+      (catch kerror/ExceptionInfo e
         (is (= :value/max-bytes-invalid (:problem (ex-data e)))))))
   (try
     (codec/decode-bounded "not bytes" 32)
     (is false "decode boundary must require bytes")
-    (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
+    (catch kerror/ExceptionInfo e
       (is (= :value/not-bytes (:problem (ex-data e)))))))

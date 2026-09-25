@@ -185,12 +185,12 @@ type Defaults struct {
     (is (not (schema/valid? compiled "Secret" [1 2 3] limits)))))
 
 (deftest references-syntax-and-resource-limits-fail-closed
-  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+  (is (thrown? js/Error
                (schema/compile-schema (dsl/parse "type Broken Missing"))))
-  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+  (is (thrown? js/Error
                (schema/compile-schema
                 (dsl/parse "type Secret bytes representation advanced Missing"))))
-  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+  (is (thrown? js/Error
                (dsl/parse "type U union { | String \"s\" } representation mystery")))
   (let [compiled (schema/compile-schema
                   (dsl/parse "type Tree struct { name String children [Tree] }"))
@@ -269,18 +269,18 @@ type Defaults struct {
     (is (not (schema/valid? compiled "StringFields" "enabled=true,enabled=false,count=2" limits)))
     (is (not (schema/valid? compiled "StringMap" "a=01" limits)))
     (is (not (schema/valid? compiled "Defaults" {"enabled" false} limits)))
-    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+    (is (thrown? js/Error
                  (schema/logical->representation! compiled "Joined"
                                                   {"enabled" false "count" 3
                                                    "label" "bad:value"}
                                                   limits))))
-  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+  (is (thrown? js/Error
                (schema/compile-schema
                 (dsl/parse "type Bad struct { a String b Int } representation tuple { fieldOrder [\"a\", \"a\"] }"))))
-  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+  (is (thrown? js/Error
                (schema/compile-schema
                 (dsl/parse "type Bad {String:Int} representation stringpairs { innerDelim \",\" entryDelim \",\" }"))))
-  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+  (is (thrown? js/Error
                (schema/compile-schema
                 (dsl/parse "type Bad struct { nested {String:String} } representation stringjoin { join \":\" }")))))
 
@@ -372,13 +372,13 @@ type Defaults struct {
            (:value
             (schema/logical->representation! compiled "CompressedLabels"
                                              {"label" "Ada"} adl-limits))))
-    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+    (is (thrown? js/Error
                  (schema/representation->logical!
                   compiled "Secret" ["sealed" "Ada"]
                   (assoc limits :adl-validators {"Ciphertext" vector?}))))
-    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+    (is (thrown? js/Error
                  (schema/logical->representation! compiled "Secret" 42 adl-limits)))
-    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+    (is (thrown? js/Error
                  (schema/logical->representation!
                   compiled "Secret" "Ada"
                   (assoc-in adl-limits [:adl-capabilities "Ciphertext" :encode]
@@ -414,11 +414,11 @@ type Defaults struct {
     (is (every? #(and (pos? (get-in % [:input :nodes]))
                       (pos? (get-in % [:output :nodes])))
                 (:adl-receipts decoded)))
-    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+    (is (thrown? js/Error
                  (schema/representation->logical! compiled "Secret"
                                                   ["sealed" "Ada"]
                                                   (assoc metered :max-adl-fuel 4))))
-    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+    (is (thrown? js/Error
                  (schema/representation->logical!
                   compiled "Secret" ["sealed" "Ada"]
                   (-> metered
@@ -428,7 +428,7 @@ type Defaults struct {
                       (assoc-in [:adl-capabilities "Ciphertext" :validate-logical]
                                 vector?)))))
     (let [counter (atom 0)]
-      (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+      (is (thrown? js/Error
                    (schema/representation->logical!
                     compiled "Secret" ["sealed" "Ada"]
                     (assoc-in metered [:adl-capabilities "Ciphertext" :decode]
@@ -483,48 +483,48 @@ type Defaults struct {
                 (concat (:adl-receipts decoded) (:adl-receipts encoded))))
     (is (= [32 30 27 24 32 30 25 20]
            (mapv :fuel-limit @requests)))
-    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+    (is (thrown? js/Error
                  (schema/representation->logical!
                   compiled "Secret" ["sealed" "Ada"]
                   (assoc-in metered [:adl-capabilities "Ciphertext" :module-cid]
                             "bafkreibad"))))
-    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+    (is (thrown? js/Error
                  (schema/representation->logical!
                   compiled "Secret" ["sealed" "Ada"]
                   (assoc metered :max-adl-fuel 4))))
-    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+    (is (thrown? js/Error
                  (schema/representation->logical!
                   compiled "Secret" ["sealed" "Ada"]
                   (assoc-in metered [:adl-capabilities "Ciphertext" :invoke]
                             (fn [request]
                               (assoc (invoke request) :memory-pages 3))))))
-    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+    (is (thrown? js/Error
                  (schema/representation->logical!
                   compiled "Secret" ["sealed" "Ada"]
                   (assoc-in metered [:adl-capabilities "Ciphertext" :invoke]
                             (fn [request]
                               (assoc (invoke request) :engine-id "other-engine"))))))
-    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+    (is (thrown? js/Error
                  (schema/representation->logical!
                   compiled "Secret" ["sealed" "Ada"]
                   (update-in metered [:adl-capabilities "Ciphertext" :operations]
                              disj :decode))))
-    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+    (is (thrown? js/Error
                  (schema/wasm-adl-capability
                   {:engine-id "test-metered-wasm/v1"
                    :module-bytes empty-wasm-module :module-cid module-cid
                    :operations #{:network} :invoke invoke})))))
 
 (deftest invalid-union-representation-tables-fail-at-compile-time
-  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+  (is (thrown? js/Error
                (schema/compile-schema
                 (dsl/parse
                  "type Bad union { | String \"a\" | String \"ab\" } representation stringprefix"))))
-  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+  (is (thrown? js/Error
                (schema/compile-schema
                 (dsl/parse
                  "type Bad union { | String int | Int string } representation kinded"))))
-  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+  (is (thrown? js/Error
                (schema/compile-schema
                 (dsl/parse
                  "type Bad union { | String \"a\" | String \"b\" } representation keyed")))))
@@ -553,7 +553,7 @@ type Defaults struct {
                                       {"map" {"fields" {"enabled" {"implicit" nil}}}}}}}}
            {"types" {"A" {"copy" {"fromType" "B"}}
                      "B" {"copy" {"fromType" "A"}}}}]]
-    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+    (is (thrown? js/Error
                  (schema/compile-schema dmt)))))
 
 (deftest schema-schema-allows-inline-link-union-members

@@ -13,7 +13,7 @@
   are standard base64 without padding rather than base64url, and that
   `<`, `>` and `&` are not escaped the way Go's encoding/json escapes
   them by default."
-  (:require [kotoba.lang.text :as str]
+  (:require [kotoba.bytes :as kbytes] [kotoba.lang.text :as str]
             [kotoba.test :refer [deftest is testing]]
             [ipld.core :as ipld]
             [ipld.dag-json :as dj]
@@ -43,7 +43,7 @@
   "Decoded by the HOST, not by the code under test -- otherwise the
   fixture would be built from the thing it is meant to check."
   [s]
-  #?(:clj (.decode (java.util.Base64/getDecoder) ^String s)
+  #?(:clj (kbytes/base64-decode-bytes ^String s)
      :cljs (js/Uint8Array.from (js/Buffer.from s "base64"))))
 
 (def ep-signature
@@ -124,7 +124,7 @@
 ;; Nothing in this repository can make that agree by construction.
 
 (defn- text->bytes [s]
-  #?(:clj (.getBytes ^String s "UTF-8")
+  #?(:clj (kbytes/utf8-bytes ^String s)
      :cljs (.encode (js/TextEncoder.) s)))
 
 (defn- byte-vec [b]

@@ -6,8 +6,8 @@
   indistinguishable from an oversight -- so the table is executed: implemented
   kinds must round-trip, and not-adopted kinds must be refused. If someone
   later implements one, this fails until the decision is revisited on purpose."
-  (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]
+  (:require [kotoba.lang.error :as kerror] [clojure.edn :as edn]
+            [kotoba.io :as io]
             [kotoba.test :refer [deftest is testing]]
             [ipld.selector :as selector]))
 
@@ -29,7 +29,7 @@
 
 (defn- attempt [value]
   (try {:ok (selector/from-data-model value)}
-       (catch clojure.lang.ExceptionInfo e {:err (.getMessage e)})))
+       (catch kerror/ExceptionInfo e {:err (.getMessage e)})))
 
 (deftest every-kind-in-the-table-has-a-probe
   (is (= (set (map :kind (:kinds coverage))) (set (keys samples)))))
