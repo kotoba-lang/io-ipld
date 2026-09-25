@@ -16,7 +16,7 @@
   "The `:problem` of the refusal `f` raises, or nil when it returns."
   [f]
   (try (f) nil
-       (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
+       (catch :default e
          (:problem (ex-data e)))))
 
 (defn- bytes-of [xs]

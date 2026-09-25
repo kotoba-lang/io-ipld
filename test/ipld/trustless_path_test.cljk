@@ -4,7 +4,7 @@
   A trustless path is a claim -- \"this value is at this path under this root\"
   -- plus the blocks needed to check it. Each vector below is one way that
   claim can be wrong, and the answer that separates it from the others."
-  (:require [kotoba.test :refer [deftest is testing]]
+  (:require [kotoba.lang.error :as kerror] [kotoba.test :refer [deftest is testing]]
             [ipld.core :as ipld]
             [ipld.graph :as graph]
             [ipld.link :as link]
@@ -27,7 +27,7 @@
   {:max-blocks 32 :max-bytes 8192 :max-depth 16 :max-matches 16})
 
 (defn- failure [f]
-  (try (do (f) nil) (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
+  (try (do (f) nil) (catch kerror/ExceptionInfo e (:type (ex-data e)))))
 
 (deftest a-path-returns-its-value-and-the-blocks-that-prove-it
   (let [{:keys [store root]} (world)

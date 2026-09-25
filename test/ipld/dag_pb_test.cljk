@@ -99,7 +99,7 @@
               (dag-pb/cid (dag-pb/encode (update fixture-node :links reverse)))))))
 
 (deftest a-link-needs-a-target
-  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+  (is (thrown? js/Error
                (dag-pb/encode {:links [{:name "x" :tsize 1}]}))))
 
 ;; ── decode ────────────────────────────────────────────────────────────────

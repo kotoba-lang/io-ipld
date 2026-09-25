@@ -5,7 +5,7 @@
   named references; `valid?`/`unify!` then match plain IPLD Data Model values
   without changing their content identity."
   {:kotoba/export [adl-operations adl-wasm-abi advanced-version compile-schema logical->representation! prelude representation->logical! require-adl-versions! require-unify supported-kinds unify unify! union-kinds valid? wasm-adl-capability]}
-  (:require [kotoba.lang.coll :as set]
+  (:require [kotoba.bytes :as kbytes] [kotoba.lang.coll :as set]
             [kotoba.lang.text :as str]
             [ipld.data-model :as dm]
             [ipld.link :as link]
@@ -801,7 +801,7 @@
     capability))
 
 (defn- utf8-length [text]
-  #?(:clj (alength (.getBytes ^String text "UTF-8"))
+  #?(:clj (alength (kbytes/utf8-bytes ^String text))
      :cljs (.-length (.encode (js/TextEncoder.) text))))
 
 (defn- measure-value! [runtime value path]
@@ -1980,7 +1980,7 @@
   ([legacy-schema value path] (legacy-valid? legacy-schema value path))
   ([compiled type-name value limits]
    (try (unify! compiled type-name value limits) true
-        (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) _ false))))
+        (catch :default _ false))))
 
 (defn unify
   "Backward-compatible typed lens for the original data-driven algebra."

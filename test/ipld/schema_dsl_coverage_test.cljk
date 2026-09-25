@@ -8,8 +8,8 @@
   and a `:rejected` row must fail with the recorded code. Adding a construct to
   the table without implementing it fails, and implementing one without
   updating the table fails too."
-  (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]
+  (:require [kotoba.lang.error :as kerror] [clojure.edn :as edn]
+            [kotoba.io :as io]
             [kotoba.test :refer [deftest is testing]]
             [ipld.core :as core]
             [multiformats.core :as mf]
@@ -81,7 +81,7 @@
   (try
     {:ok (schema/representation->logical!
           (schema/compile-schema (dsl/parse source)) type-name value limits)}
-    (catch clojure.lang.ExceptionInfo error
+    (catch kerror/ExceptionInfo error
       {:code (or (:problem (ex-data error)) (:code (ex-data error)))})))
 
 (deftest every-construct-in-the-table-has-a-probe

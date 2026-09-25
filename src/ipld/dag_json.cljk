@@ -19,7 +19,7 @@
   not canonical. A codec whose job is identity cannot let two byte
   strings denote one value."
   {:kotoba/export [base64-decode base64-encode cid codec decode decode-string encode encode-string node->block]}
-  (:require [kotoba.lang.text :as str]
+  (:require [kotoba.bytes :as kbytes] [kotoba.lang.text :as str]
             [ipld.data-model :as data-model]
             [ipld.link :as link]
             [multiformats.core :as mf]))
@@ -140,7 +140,7 @@
   "Canonical DAG-JSON bytes for `node`."
   [node]
   (let [s (encode-string node)]
-    #?(:clj (.getBytes ^String s "UTF-8")
+    #?(:clj (kbytes/utf8-bytes ^String s)
        :cljs (.encode (js/TextEncoder.) s))))
 
 (defn cid
@@ -366,7 +366,7 @@
   only accepted input, and it is enforced here rather than argued about in
   each read function."
   [bytes]
-  (let [text #?(:clj (String. ^bytes (byte-array (byte-seq bytes)) "UTF-8")
+  (let [text #?(:clj (kbytes/utf8-string ^bytes (byte-array (byte-seq bytes)))
                 :cljs (.decode (js/TextDecoder.) bytes))
         node (decode-string text)
         re (encode-string node)]

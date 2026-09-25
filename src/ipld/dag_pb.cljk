@@ -41,7 +41,7 @@
   `ipld.core`. Link hashes and `Data` payloads are vectors of unsigned
   ints, matching what `protobuf.wire` reads and writes."
   {:kotoba/export [cid codec decode encode link-schema node->block node-schema]}
-  (:require [multiformats.core :as mf]
+  (:require [kotoba.bytes :as kbytes] [multiformats.core :as mf]
             [protobuf.wire :as pb]))
 
 (def ^:const codec
@@ -56,7 +56,7 @@
   [b]
   (cond
     (nil? b) []
-    (string? b) #?(:clj (mapv #(bit-and (int %) 0xff) (.getBytes ^String b "UTF-8"))
+    (string? b) #?(:clj (mapv #(bit-and (int %) 0xff) (kbytes/utf8-bytes ^String b))
                    :cljs (vec (.encode (js/TextEncoder.) b)))
     :else (mapv #(bit-and (int %) 0xff) (seq b))))
 

@@ -1,5 +1,5 @@
 (ns ipld.graph-test
-  (:require #?(:clj [kotoba.test :refer [deftest is testing]]
+  (:require [kotoba.bytes :as kbytes] #?(:clj [kotoba.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
             [ipld.core :as ipld]
             [ipld.data-model]
@@ -171,7 +171,7 @@
   []
   (let [store (atom {})
         put! (fn [cid bytes] (swap! store assoc cid bytes))
-        payload #?(:clj (.getBytes "the bytes in a raw leaf" "UTF-8")
+        payload #?(:clj (kbytes/utf8-bytes "the bytes in a raw leaf")
                    :cljs (.encode (js/TextEncoder.) "the bytes in a raw leaf"))
         raw-cid (multiformats.core/cidv1-raw payload)
         _ (put! raw-cid payload)
@@ -192,7 +192,7 @@
     ;; And the guard must still be a guard. A raw CID whose bytes were swapped
     ;; has to fail closed, or the fix would have removed verification rather
     ;; than corrected it.
-    (let [tampered (fn [_] #?(:clj (.getBytes "different" "UTF-8")
+    (let [tampered (fn [_] #?(:clj (kbytes/utf8-bytes "different")
                               :cljs (.encode (js/TextEncoder.) "different")))]
       (is (thrown? #?(:clj Exception :cljs :default)
                    (ipld/get-verified-block tampered raw))))))
@@ -222,7 +222,7 @@
   ;; Verifying it here would be guessing, so the refusal stays -- and it is a
   ;; DIFFERENT refusal from the one raw used to get.
   (let [pb-cid "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
-        get-fn (fn [_] #?(:clj (.getBytes "anything" "UTF-8")
+        get-fn (fn [_] #?(:clj (kbytes/utf8-bytes "anything")
                           :cljs (.encode (js/TextEncoder.) "anything")))]
     (is (false? (ipld/readdressable-codec? 0x70)))
     (is (true? (ipld/readdressable-codec? 0x55)))

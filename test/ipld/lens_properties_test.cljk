@@ -6,7 +6,7 @@
   representation to its logical form and encoding it back must return the
   representation you started from. A lens that loses information passes any
   single-direction test and still corrupts data."
-  (:require [kotoba.test :refer [deftest is testing]]
+  (:require [kotoba.lang.error :as kerror] [kotoba.test :refer [deftest is testing]]
             [ipld.schema :as schema]
             [ipld.schema-dsl :as dsl]))
 
@@ -48,17 +48,17 @@
     (is (= :invalid-union-table
            (try (compiled "type B struct {}\ntype C struct {}\ntype A union {| B map | C map} representation kinded")
                 nil
-                (catch clojure.lang.ExceptionInfo e (:problem (ex-data e)))))))
+                (catch kerror/ExceptionInfo e (:problem (ex-data e)))))))
   (testing "keyed union with a duplicated discriminant"
     (is (= :invalid-union-table
            (try (compiled "type B struct {}\ntype C struct {}\ntype A union {| B \"k\" | C \"k\"} representation keyed")
                 nil
-                (catch clojure.lang.ExceptionInfo e (:problem (ex-data e))))))))
+                (catch kerror/ExceptionInfo e (:problem (ex-data e))))))))
 
 (defn- nested [n] (reduce (fn [acc _] {"n" acc}) {"n" nil} (range n)))
 
 (defn- problem [f]
-  (try (do (f) nil) (catch clojure.lang.ExceptionInfo e (:problem (ex-data e)))))
+  (try (do (f) nil) (catch kerror/ExceptionInfo e (:problem (ex-data e)))))
 
 (deftest recursion-budgets-bind-typed-structures
   (let [c (compiled "type A struct { n nullable A }")]

@@ -8,7 +8,7 @@
   reader refuses. Three invalid rows were accepted when this corpus was first
   measured, which is why it is here rather than in prose."
   (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]
+            [kotoba.io :as io]
             [kotoba.test :refer [deftest is testing]]
             [ipld.core :as core]
             [ipld.link :as link]))
