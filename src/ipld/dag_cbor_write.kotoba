@@ -20,8 +20,8 @@
 (ns ipld.dag-cbor-write
   (:require [multiformats.cid :as cid])
   (:export [head int-item text-item bytes-item null-item bool-item link-item
-            array-head map-item append key-less?
-            main test-ints test-scalars test-link test-array test-map]))
+            link-bytes-item array-head map-item append key-less?
+            main test-ints test-scalars test-link test-array test-map test-key-order-utf8]))
 
 (defn append [a :vector-i64 b :vector-i64] :vector-i64
   (let [n (vector-count b)]
@@ -57,26 +57,37 @@
 
 (defn bool-item [b :bool] :vector-i64 (if b (vector-i64 245) (vector-i64 244)))
 
+(defn link-bytes-item [c :vector-i64] :vector-i64
+  ;; a link given as its BINARY CID (no multibase prefix), e.g. what
+  ;; document-link-value answers: tag 42 over the byte string 00 ++ c
+  (append (vector-i64 216 42) (bytes-item (append (vector-i64 0) c))))
+
 (defn link-item [c :string] :vector-i64
   ;; "" for an invalid CID string: the caller checks cid/cid-valid? first
   (if (cid/cid-valid? c)
-    (append (vector-i64 216 42) (bytes-item (append (vector-i64 0) (cid/cid->bytes c))))
+    (link-bytes-item (cid/cid->bytes c))
     (vector-i64)))
 
 (defn array-head [n :i64] :vector-i64 (head 4 n))
 
+(defn- utf8-width [cp :i64] :i64
+  (if (< cp 128) 1 (if (< cp 2048) 2 (if (< cp 65536) 3 4))))
+
 (defn key-less? [a :string b :string] :bool
   ;; DAG-CBOR map key order: shorter encoded key first, then bytewise. Keys of
   ;; equal UTF-8 length compare by code point, which is UTF-8's byte order.
+  ;; string-code-point-at takes a UTF-8 BYTE offset (string-length is the byte
+  ;; length), so the walk steps by each code point's width; up to the first
+  ;; difference both keys share their code points, hence their offsets.
   (let [la (string-byte-length a) lb (string-byte-length b)]
     (if (< la lb) true
         (if (> la lb) false
-            (let [n (string-length a)]
-              (loop [i 0]
-                (if (>= i n)
-                  false
-                  (let [ca (string-code-point-at a i) cb (string-code-point-at b i)]
-                    (if (< ca cb) true (if (> ca cb) false (recur (+ i 1))))))))))))
+            (loop [i 0]
+              (if (>= i la)
+                false
+                (let [ca (string-code-point-at a i) cb (string-code-point-at b i)]
+                  (if (< ca cb) true
+                      (if (> ca cb) false (recur (+ i (utf8-width ca))))))))))))
 
 (defn- smallest-unused [keys [:set :string] used [:set :string]] :string
   (let [n (typed-set-count [:set :string] keys)]
@@ -153,6 +164,14 @@
                                         101 115 116 97 116 101 5 102 99 97 117 115 101 115 3 103 108 97 109
                                         112 111 114 116 2 105 97 117 116 104 111 114 105 116 121 1))))))
 
-;; main: the number of test-* that pass (5 when all do).
+(defn test-key-order-utf8 [] :i64
+  ;; equal UTF-8 length, multi-byte code points: bytewise (2026-10-09, S5 --
+  ;; the walk stepped one byte at a time and trapped on "éa" vs "éb": the
+  ;; second offset splits é)
+  (pass (and (key-less? "é1" "日") (not (key-less? "日" "é1"))
+             (key-less? "日b" "a😀") (key-less? "日b" "😀") (key-less? "😀a" "😀b")
+             (key-less? "ab" "é") (not (key-less? "é" "é")) (key-less? "éa" "éb"))))
+
+;; main: the number of test-* that pass (6 when all do).
 (defn main [] :i64
-  (+ (test-ints) (test-scalars) (test-link) (test-array) (test-map)))
+  (+ (test-ints) (test-scalars) (test-link) (test-array) (test-map) (test-key-order-utf8)))

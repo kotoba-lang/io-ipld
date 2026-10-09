@@ -310,11 +310,36 @@ encoding for a guest whose node shape is known (root ADR-2610082200 §16, plan C
 step A): shortest-head integers, UTF-8 text, bytes, null and booleans, tag-42
 links (via `multiformats.cid/cid->bytes`), array heads, and maps with keys sorted
 length-first then bytewise. A map is given as its key set and each key's
-encoded value, so values of any shape compose. A general encoder over arbitrary
-values waits on document traversal in the language (step B). `ipld.core` stays
-the oracle (`migration/dag-cbor-write-v1.edn`).
+encoded value, so values of any shape compose. The general encoder over
+documents is `ipld.dag-cbor` below. `ipld.core` stays the oracle
+(`migration/dag-cbor-write-v1.edn`).
 
 ```bash
 NODE_PATH=<node_modules with @noble/hashes> kbb --backend sci \
   --classpath "src:$(kbb -Spath)" scripts/dag-cbor-write-oracle-cases.cljk
+```
+
+## Pure Kotoba: `ipld.dag-cbor` (documents to DAG-CBOR)
+
+[`src/ipld/dag_cbor.kotoba`](src/ipld/dag_cbor.kotoba) encodes a `:document` to
+DAG-CBOR (root ADR-2610092310 §3, step S5): `(dag-cbor-encode d)` answers
+`[:result :bytes :keyword]`. It walks the document with the language's own
+traversal (`document-kind` / `-count` / `-vector-at` / `-map-entry-at`, the
+scalar readers, `document-bytes-value` / `document-link-value`), re-sorts each
+map by DAG-CBOR key order (`ipld.dag-cbor-write/key-less?`, insertion sort), and
+writes with `ipld.dag-cbor-write`'s items. A document that is not IPLD data is
+refused by name: `:keyword-key`, `:non-string-key`, `:keyword-value`, `:symbol`,
+`:set`, `:list` (and the guards `:f64-non-finite`, `:too-deep`,
+`:unknown-kind`). f64 is written as a CBOR float64; a native build must refuse it
+instead (`:f64-on-native`, not done here). It needs a compiler whose kotoba-sema
+and osaho carry the `:bytes` / `:link` kinds (kotoba-sema >= 24309c92, osaho >=
+502b5ba).
+
+[`test/ipld/dag_cbor_cases.kotoba`](test/ipld/dag_cbor_cases.kotoba) is generated:
+every `:canonical` row of `resources/ipld/dag-cbor-corpus.edn` as a document,
+seeded random values against `ipld.core/encode`, and each refusal.
+
+```bash
+NODE_PATH=<node_modules with @noble/hashes> kbb --backend sci \
+  --classpath "src:$(kbb -Spath)" scripts/dag-cbor-oracle-cases.cljk [seed] [count]
 ```
