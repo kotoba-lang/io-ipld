@@ -41,7 +41,7 @@
         ;; cannot install one, whatever its host has.
         ;; 2026-09-25: 721281d2 (was 64ea18ed, which it contains): base32's
         ;; Kotoba reading, which ipld.link's typed half decodes CIDs with.
-        {:git/sha "721281d20525dc4d9af0064862d1c35226065ce2"}
+        {:git/sha "d938f48207aa5bdc4204bc49c9ac2947b1d76118"}
         ;; 2026-09-25: a09268f8 (was 1dacfc40, which it contains): cbor.core's
         ;; typed encoder (encode-tag / encode-bytes), which ipld.link's
         ;; link-fragment is built on (adr-2609242330 S1c).

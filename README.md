@@ -302,3 +302,19 @@ npm install && npm run test:cljs # nbb + compiled ClojureScript node-test
 ## License
 
 MIT
+
+## Pure Kotoba: `ipld.dag-cbor-write`
+
+[`src/ipld/dag_cbor_write.kotoba`](src/ipld/dag_cbor_write.kotoba) is DAG-CBOR
+encoding for a guest whose node shape is known (root ADR-2610082200 §16, plan C
+step A): shortest-head integers, UTF-8 text, bytes, null and booleans, tag-42
+links (via `multiformats.cid/cid->bytes`), array heads, and maps with keys sorted
+length-first then bytewise. A map is given as its key set and each key's
+encoded value, so values of any shape compose. A general encoder over arbitrary
+values waits on document traversal in the language (step B). `ipld.core` stays
+the oracle (`migration/dag-cbor-write-v1.edn`).
+
+```bash
+NODE_PATH=<node_modules with @noble/hashes> kbb --backend sci \
+  --classpath "src:$(kbb -Spath)" scripts/dag-cbor-write-oracle-cases.cljk
+```
