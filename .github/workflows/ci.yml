@@ -7,17 +7,19 @@ on:
 
 jobs:
   test:
+    # kbb (JVM-free) runs this repository's .cljk tests; `clojure -M:test`
+    # found none of them and reported "Ran 0 tests" as success
+    # (root ADR-2610100200). A run of zero tests fails here.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-      - uses: DeLaGuardo/setup-clojure@13.4
-        with:
-          cli: latest
-      - run: clojure -M:test
+      - uses: kotoba-lang/kotoba/.github/actions/setup-kbb@485a8e9716a330e616ccb5bc9fa5d45104326382
+      - name: kbb -M:test
+        run: |
+          set -o pipefail
+          kbb -M:test 2>&1 | tee kbb-test.log
+          grep -E '^kbb test: [1-9][0-9]* test\(s\), [0-9]+ pass, 0 fail, 0 error' kbb-test.log
+
 
   test-cljs:
     name: shadow-cljs node-test (real ClojureScript, not just .cljc-named)
