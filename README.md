@@ -3,8 +3,8 @@
 **The canonical IPLD DAG-CBOR layer for kotoba-lang — real tag-42 CID links,
 portable `.cljc`, verified on JVM, SCI/nbb, and compiled ClojureScript.**
 
-Composes [`kotoba-lang/multiformats`](https://github.com/kotoba-lang/multiformats)
-(CIDv1 sha2-256 assembly) and [`kotoba-lang/dag-cbor`](https://github.com/kotoba-lang/dag-cbor)
+Composes [`kotoba-lang/io-multiformats`](https://github.com/kotoba-lang/io-multiformats)
+(CIDv1 sha2-256 assembly) and [`kotoba-lang/org-ietf-cbor`](https://github.com/kotoba-lang/org-ietf-cbor)
 (canonical CBOR + generic tags) into the DAG-CBOR spec's link discipline. This
 closes the honesty note the first `prolly-tree`/`quad-store`/`commit-dag`/
 `kotoba-client` landing carried — "child/commit references are plain CID
