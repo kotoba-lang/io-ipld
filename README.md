@@ -284,8 +284,9 @@ Number integer path.
 
 ## Consumers
 
-`prolly-tree` (node children), `quad-store` (commit index-roots/prev),
-`commit-dag` (prev link), `kotoba-client` (generic missing-blocks walk).
+`prolly-tree` (node children), `arrangement` (formerly `quad-store`; commit
+index-roots/prev), `chain` (formerly `commit-dag`; prev link), `kotoba-client` (generic
+missing-blocks walk).
 Migrating them from plain CID strings to tag-42 links **changes every CID**
 (the encoded bytes change); nothing in production consumes the old-format
 blocks (production kotobase runs the wasm build of the deleted Rust engine),
